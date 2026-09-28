@@ -17,6 +17,8 @@ data class SessionTotals(
     val startLevel: Float,
     val endLevel: Float,
     val sampleCount: Int,
+    /** Charge-counter delta over the session in mAh, for cross-checking [mah]; null if unsupported. */
+    val counterMah: Double? = null,
 ) {
     val durationMs: Long get() = lastMs - startMs
     val levelAdded: Float get() = (endLevel - startLevel).coerceAtLeast(0f)
@@ -31,16 +33,23 @@ data class SessionTotals(
 /**
  * Immutable fold of [BatterySnapshot]s into session totals. Pure: no clock, no Android, no I/O.
  *
- * Contract for implementers:
- * - [fold] returns a new instance; the receiver is never modified. The first fold sets the start
- *   time and start level.
- * - mAh and Wh use the trapezoidal rule between consecutive snapshots on `currentMa` and
- *   `powerW`; negative current (phone drawing more than the source gives) subtracts.
- * - An interval longer than [MAX_INTEGRATION_GAP_MS] (sleep, a missed tick, a reconnect) is not
- *   integrated, only its end point is taken as the new reference.
- * - Screen-on fraction is time-weighted, attributing each interval to the earlier snapshot.
- * - [reachedFull] latches once any snapshot reports [ChargeStatus.FULL].
- * - [isWithinReconnectGrace] tells the tracker whether a replug at `nowMs` continues this session.
+ * Rules:
+ * - [fold] returns a new instance; the receiver is never modified. The first plugged fold sets
+ *   the start time and start level; unplugged snapshots before that are ignored.
+ * - mAh and Wh use the trapezoidal rule between consecutive plugged snapshots on `currentMa`
+ *   and `powerW`; negative current (phone drawing more than the source gives) subtracts.
+ * - An interval longer than [MAX_INTEGRATION_GAP_MS] is not bridged with a straight line: it is
+ *   integrated from the charge-counter delta when both ends have one (Wh at the mean of the two
+ *   voltages), and skipped otherwise.
+ * - An unplugged snapshot records nothing but breaks the chain, so the interval spanning a
+ *   loose-connector gap is never integrated. The tracker should fold the unplug reading for
+ *   exactly that reason. [lastMs][SessionTotals.lastMs] and the reconnect grace both use the
+ *   last *plugged* reading.
+ * - Screen-on fraction is time-weighted over the straight-line intervals, attributing each
+ *   interval to its earlier snapshot. Counter-bridged gaps are excluded: nobody knows what the
+ *   screen did then.
+ * - [reachedFull] latches once any plugged snapshot reports [ChargeStatus.FULL].
+ * - Non-positive time steps (clock set backwards, duplicate reading) only move the reference.
  */
 data class SessionAccumulator(
     val startMs: Long = 0L,
@@ -49,61 +58,121 @@ data class SessionAccumulator(
     val wh: Double = 0.0,
     val peakW: Double = 0.0,
     val maxTempC: Float? = null,
+    /** Time covered by energy integration; the denominator of average power. */
     val integratedMs: Long = 0L,
     val screenOnMs: Long = 0L,
     val reachedFull: Boolean = false,
     val startLevel: Float = 0f,
     val endLevel: Float = 0f,
     val sampleCount: Int = 0,
+    /**
+     * Time covered by straight-line intervals; the denominator of screen-on fraction. Defaults to
+     * [integratedMs] so an accumulator rebuilt from a stored session (which only has the fraction)
+     * keeps a consistent ratio.
+     */
+    val screenTrackedMs: Long = integratedMs,
+    /** Last plugged reading; defaults from [last] for the same reason. */
+    val lastPluggedMs: Long = last?.takeIf { it.isPlugged }?.tMs ?: 0L,
+    val firstCounterUah: Long? = null,
+    val lastCounterUah: Long? = null,
 ) {
     val isEmpty: Boolean get() = last == null
 
-    /**
-     * Stub: records start/end level, count, peaks and the full latch; integration is left for the
-     * session team.
-     */
     fun fold(snapshot: BatterySnapshot): SessionAccumulator {
-        val first = last == null
-        return copy(
-            startMs = if (first) snapshot.tMs else startMs,
+        val previous = last
+        if (!snapshot.isPlugged) {
+            return if (previous == null) this else copy(last = snapshot)
+        }
+        if (previous == null) {
+            return copy(
+                startMs = snapshot.tMs,
+                last = snapshot,
+                peakW = snapshot.powerW.coerceAtLeast(0.0),
+                maxTempC = snapshot.tempC,
+                reachedFull = snapshot.status == ChargeStatus.FULL,
+                startLevel = snapshot.levelPct,
+                endLevel = snapshot.levelPct,
+                sampleCount = 1,
+                lastPluggedMs = snapshot.tMs,
+                firstCounterUah = snapshot.chargeCounterUah,
+                lastCounterUah = snapshot.chargeCounterUah,
+            )
+        }
+
+        var next = copy(
             last = snapshot,
             peakW = maxOf(peakW, snapshot.powerW),
             maxTempC = maxOf(maxTempC ?: snapshot.tempC, snapshot.tempC),
             reachedFull = reachedFull || snapshot.status == ChargeStatus.FULL,
-            startLevel = if (first) snapshot.levelPct else startLevel,
             endLevel = snapshot.levelPct,
             sampleCount = sampleCount + 1,
+            lastPluggedMs = snapshot.tMs,
+            firstCounterUah = firstCounterUah ?: snapshot.chargeCounterUah,
+            lastCounterUah = snapshot.chargeCounterUah ?: lastCounterUah,
         )
+
+        val dtMs = snapshot.tMs - previous.tMs
+        if (!previous.isPlugged || dtMs <= 0) return next
+
+        if (dtMs <= MAX_INTEGRATION_GAP_MS) {
+            val hours = dtMs / MS_PER_HOUR
+            next = next.copy(
+                mah = mah + (previous.currentMa + snapshot.currentMa) / 2.0 * hours,
+                wh = wh + (previous.powerW + snapshot.powerW) / 2.0 * hours,
+                integratedMs = integratedMs + dtMs,
+                screenOnMs = screenOnMs + if (previous.screenOn) dtMs else 0L,
+                screenTrackedMs = screenTrackedMs + dtMs,
+            )
+        } else {
+            val from = previous.chargeCounterUah
+            val to = snapshot.chargeCounterUah
+            if (from != null && to != null) {
+                val gapMah = (to - from) / 1000.0
+                val meanV = (previous.voltageMv + snapshot.voltageMv) / 2.0 / 1000.0
+                next = next.copy(
+                    mah = mah + gapMah,
+                    wh = wh + gapMah * meanV / 1000.0,
+                    integratedMs = integratedMs + dtMs,
+                )
+            }
+        }
+        return next
     }
 
     /** True when a replug at [nowMs] should continue this session rather than start a new one. */
     fun isWithinReconnectGrace(nowMs: Long): Boolean {
-        val lastMs = last?.tMs ?: return false
-        return nowMs - lastMs in 0..RECONNECT_GRACE_MS
+        if (last == null) return false
+        return nowMs - lastPluggedMs in 0..RECONNECT_GRACE_MS
     }
 
     val totals: SessionTotals
         get() = SessionTotals(
             startMs = startMs,
-            lastMs = last?.tMs ?: startMs,
+            lastMs = if (last == null) startMs else lastPluggedMs,
             mah = mah,
             wh = wh,
             peakW = peakW,
-            avgW = if (integratedMs > 0) wh * 3_600_000.0 / integratedMs else 0.0,
+            avgW = if (integratedMs > 0) wh * MS_PER_HOUR / integratedMs else 0.0,
             maxTempC = maxTempC,
-            screenOnFraction = if (integratedMs > 0) screenOnMs.toFloat() / integratedMs else 0f,
+            screenOnFraction = if (screenTrackedMs > 0) screenOnMs.toFloat() / screenTrackedMs else 0f,
             reachedFull = reachedFull,
             startLevel = startLevel,
             endLevel = endLevel,
             sampleCount = sampleCount,
+            counterMah = firstCounterUah?.let { first -> lastCounterUah?.let { (it - first) / 1000.0 } },
         )
 
     companion object {
         /** Unplug and replug within this window continues the same session (loose connector). */
         const val RECONNECT_GRACE_MS = 30_000L
 
-        /** Intervals longer than this are treated as a gap, not integrated. */
-        const val MAX_INTEGRATION_GAP_MS = 60_000L
+        /**
+         * Intervals longer than this are bridged with the charge counter, not a straight line.
+         * Samples come every 10 s while plugged, so anything this long is a stall, not a tick.
+         */
+        const val MAX_INTEGRATION_GAP_MS = 5 * 60_000L
+
+        private const val MS_PER_HOUR = 3_600_000.0
 
         val EMPTY = SessionAccumulator()
     }

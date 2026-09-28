@@ -40,6 +40,7 @@ object ServiceLocator {
         CurrentNormalizer(
             override = settings.currentUnit.value,
             initial = CurrentNormalizer.Verdict.decode(settings.normalizerVerdict.value),
+            sink = { settings.normalizerVerdict.set(it.encode()) },
         )
     }
 
