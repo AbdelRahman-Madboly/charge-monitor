@@ -7,6 +7,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -24,6 +25,9 @@ private val LightColors = lightColorScheme(
     primaryContainer = Accent,
     onPrimaryContainer = Color(0xFF0B1A06),
     secondary = Color(0xFF55606A),
+    secondaryContainer = Color(0xFFD6EBCC),
+    onSecondaryContainer = Color(0xFF10230A),
+    surfaceContainer = Color(0xFFECEEF0),
     background = Color(0xFFF6F7F8),
     surface = Color(0xFFF6F7F8),
     surfaceVariant = Color(0xFFE4E7EA),
@@ -38,6 +42,9 @@ private val DarkColors = darkColorScheme(
     primaryContainer = AccentDeep,
     onPrimaryContainer = Color(0xFFE6F6DD),
     secondary = Color(0xFFA8B0B8),
+    secondaryContainer = Color(0xFF2A3A24),
+    onSecondaryContainer = Color(0xFFD6EBCC),
+    surfaceContainer = Color(0xFF181B1E),
     background = Color(0xFF101214),
     surface = Color(0xFF101214),
     surfaceVariant = Color(0xFF1E2226),
@@ -74,3 +81,26 @@ fun ChargeMonitorTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Com
         content = content,
     )
 }
+
+/**
+ * Chart series colours, one hue per quantity everywhere in the app. Each has a darker light-theme
+ * variant so thin lines keep at least 3:1 against the light surface.
+ */
+object SeriesColors {
+    private val isDark: Boolean
+        @Composable get() = MaterialTheme.colorScheme.background.luminance() < 0.5f
+
+    val power: Color
+        @Composable get() = MaterialTheme.colorScheme.primary
+    val current: Color
+        @Composable get() = if (isDark) Color(0xFF6FA8E8) else Color(0xFF2F6DB5)
+    val voltage: Color
+        @Composable get() = if (isDark) Color(0xFFE8B04A) else Color(0xFFA86A00)
+    val level: Color
+        @Composable get() = if (isDark) Color(0xFFB39DDB) else Color(0xFF7154B0)
+}
+
+/** Palette offered for new power banks; distinct from each other and from the built-in colours. */
+val BankPalette: List<Int> = listOf(
+    0xFFE57373, 0xFFFFB74D, 0xFFFFD54F, 0xFF4DB6AC, 0xFF4FC3F7, 0xFF7986CB, 0xFFF06292, 0xFFA1887F,
+).map { it.toInt() }

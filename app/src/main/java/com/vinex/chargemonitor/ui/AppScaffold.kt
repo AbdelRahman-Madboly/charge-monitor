@@ -13,6 +13,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -23,6 +24,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
+import com.vinex.chargemonitor.ServiceLocator
+import com.vinex.chargemonitor.ui.history.SessionDetailScreen
+import com.vinex.chargemonitor.ui.onboarding.OnboardingScreen
 import com.vinex.chargemonitor.R
 import com.vinex.chargemonitor.ui.dashboard.DashboardScreen
 import com.vinex.chargemonitor.ui.history.HistoryScreen
@@ -37,15 +43,25 @@ enum class Tab(val route: String, @StringRes val label: Int, val icon: ImageVect
     SETTINGS("settings", R.string.tab_settings, Icons.Filled.Settings),
 }
 
+private const val SESSION_ROUTE = "session/{id}"
+
 @Composable
 fun AppScaffold() {
+    val settings = ServiceLocator.settings
+    val onboarded by settings.onboardingDone.flow.collectAsState()
+    if (!onboarded) {
+        OnboardingScreen(onDone = { settings.onboardingDone.set(true) })
+        return
+    }
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination
 
+    val onTab = current?.route != SESSION_ROUTE
+
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            if (onTab) NavigationBar {
                 Tab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = current?.hierarchy?.any { it.route == tab.route } == true,
@@ -67,7 +83,13 @@ fun AppScaffold() {
         NavHost(nav, startDestination = Tab.LIVE.route, modifier = Modifier.padding(padding)) {
             composable(Tab.LIVE.route) { LiveScreen() }
             composable(Tab.DASHBOARD.route) { DashboardScreen() }
-            composable(Tab.HISTORY.route) { HistoryScreen() }
+            composable(Tab.HISTORY.route) { HistoryScreen(onOpenSession = { nav.navigate("session/$it") }) }
+            composable(SESSION_ROUTE, arguments = listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+                SessionDetailScreen(
+                    sessionId = entry.arguments?.getLong("id") ?: 0L,
+                    onBack = { nav.popBackStack() },
+                )
+            }
             composable(Tab.SETTINGS.route) { SettingsScreen() }
         }
     }
