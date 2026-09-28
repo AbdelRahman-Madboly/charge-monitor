@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings for the background service, its notifications and the widget. -->
+<resources>
+    <string name="notif_charging">%1$.1f W · %2$.1f%%</string>
+    <string name="notif_charging_source">%1$.1f W · %2$.1f%% · %3$s</string>
+    <string name="notif_mock_suffix">%1$s (mock)</string>
+
+    <string name="prompt_title">Connected to?</string>
+    <string name="prompt_text">Keeps %1$s if you do nothing. Tap for all sources.</string>
+    <string name="prompt_text_default">Tap to pick the charger or power bank.</string>
+
+    <string name="laptop_title">Charging from a laptop (USB)</string>
+    <string name="laptop_text">Not counted toward any power bank.</string>
+    <string name="action_its_a_bank">It\'s a power bank</string>
+    <string name="action_its_bank_named">It\'s %1$s</string>
+
+    <string name="alert_target_title">Reached %1$d%%</string>
+    <string name="alert_target_text">Unplug now to keep the battery at your target level.</string>
+    <string name="alert_temp_title">Battery at %1$.1f °C</string>
+    <string name="alert_temp_text">Above your %1$.0f °C limit. Stop using the phone or unplug.</string>
+    <string name="alert_full_title">Charging complete</string>
+    <string name="alert_full_text">The phone reports the battery as full.</string>
+    <string name="alert_stopped_title">Charging stopped</string>
+    <string name="alert_stopped_text">Still plugged in, but no longer charging. The power bank may be empty.</string>
+
+    <string name="widget_level_source">%1$.0f%% · %2$s</string>
+    <string name="widget_level_idle">Not charging · %1$.0f%%</string>
+    <string name="widget_watts">%1$.1f W</string>
+    <string name="widget_bank_total">%1$.2f bank charges</string>
+</resources>

@@ -1,0 +1,313 @@
+package com.vinex.chargemonitor.session
+
+import com.vinex.chargemonitor.battery.BatterySnapshot
+import com.vinex.chargemonitor.battery.PlugType
+import com.vinex.chargemonitor.data.BuiltInSources
+import com.vinex.chargemonitor.data.ChargeSession
+import com.vinex.chargemonitor.data.PowerSource
+import com.vinex.chargemonitor.data.Repository
+import com.vinex.chargemonitor.data.Sample
+import com.vinex.chargemonitor.data.SettingsStore
+import com.vinex.chargemonitor.source.SourceResolver
+import kotlin.math.roundToInt
+
+/** The slice of persistence the tracker needs; lets tests run it against an in-memory fake. */
+interface SessionStore {
+    suspend fun openSession(): ChargeSession?
+    suspend fun session(id: Long): ChargeSession?
+    suspend fun source(id: Long): PowerSource?
+    suspend fun startSession(session: ChargeSession): Long
+    suspend fun checkpoint(session: ChargeSession, pending: List<Sample>)
+}
+
+class RepositorySessionStore(private val repository: Repository) : SessionStore {
+    override suspend fun openSession() = repository.openSession()
+    override suspend fun session(id: Long) = repository.session(id)
+    override suspend fun source(id: Long) = repository.source(id)
+    override suspend fun startSession(session: ChargeSession) = repository.startSession(session)
+    override suspend fun checkpoint(session: ChargeSession, pending: List<Sample>) =
+        repository.checkpoint(session, pending)
+}
+
+/**
+ * Turns the stream of battery readings into session rows and samples.
+ *
+ * Not thread-safe: the service calls it from one coroutine only. Every decision is made from the
+ * snapshot's own timestamp, so the tracker has no clock of its own and tests can drive it with
+ * synthetic readings.
+ *
+ * Rules (spec section 3):
+ * - plug-in opens a session whose source comes from [SourceResolver];
+ * - every reading is folded into a [SessionAccumulator]; a [Sample] is kept only on the persisted
+ *   cadence, buffered, and written together with the running totals every [checkpointMs], so a
+ *   process death loses at most that much;
+ * - unplug starts the reconnect grace; a replug with the same plug type inside it continues the
+ *   session, otherwise the session is closed at its last plugged reading;
+ * - after a restart, an open row is resumed if the phone is still on the same plug and the row
+ *   was written recently, and closed as it stands otherwise.
+ */
+class SessionTracker(
+    private val store: SessionStore,
+    private val settings: SettingsStore,
+    private val checkpointMs: Long = CHECKPOINT_MS,
+) {
+    sealed interface Event {
+        /** A new session. [promptOptions] are the "Connected to?" buttons, [laptopBank] the bank
+         *  offered by the laptop notice's "It's a power bank" action. */
+        data class Opened(
+            val session: ChargeSession,
+            val source: PowerSource?,
+            val decision: SourceResolver.Decision,
+            val promptOptions: List<PowerSource>,
+            val laptopBank: PowerSource?,
+        ) : Event
+
+        data class Resumed(val session: ChargeSession) : Event
+        data class Unplugged(val sessionId: Long) : Event
+        data class Reconnected(val sessionId: Long) : Event
+        data class Closed(val session: ChargeSession) : Event
+    }
+
+    private var restored = false
+    private var row: ChargeSession? = null
+    private var acc = SessionAccumulator.EMPTY
+    private var unpluggedAtMs: Long? = null
+    private var lastSampleMs = Long.MIN_VALUE
+    private var lastCheckpointMs = 0L
+    private var persistedSamples = 0
+    private var startCounterUah: Long? = null
+    private var lastCounterUah: Long? = null
+    private val pending = mutableListOf<Sample>()
+
+    var source: PowerSource? = null
+        private set
+
+    val sessionId: Long? get() = row?.id
+    val hasOpenSession: Boolean get() = row != null
+    val totals: SessionTotals? get() = if (row != null && !acc.isEmpty) acc.totals else null
+
+    /**
+     * Feeds one reading. [persistEveryMs] is the sample persistence cadence (the settings
+     * interval); readings in between are folded into the totals but not stored.
+     */
+    suspend fun onSnapshot(snapshot: BatterySnapshot, isMock: Boolean, persistEveryMs: Long): List<Event> {
+        val events = mutableListOf<Event>()
+        if (!restored) {
+            restored = true
+            restore(snapshot, isMock, events)
+        }
+
+        // Real and synthetic readings must never end up in the same session.
+        row?.let { if (it.mock != isMock) close(events) }
+
+        if (snapshot.isPlugged) {
+            val open = row
+            if (open != null && unpluggedAtMs != null) {
+                if (acc.isWithinReconnectGrace(snapshot.tMs) && open.plug == snapshot.plug.name) {
+                    unpluggedAtMs = null
+                    events += Event.Reconnected(open.id)
+                } else {
+                    close(events)
+                }
+            } else if (open != null && open.plug != snapshot.plug.name) {
+                // Swapped cables faster than the unplug broadcast could be noticed.
+                close(events)
+            }
+            if (row == null) open(snapshot, isMock, events) else fold(snapshot, persistEveryMs)
+        } else {
+            val open = row
+            if (open != null) {
+                if (unpluggedAtMs == null) {
+                    unpluggedAtMs = snapshot.tMs
+                    events += Event.Unplugged(open.id)
+                    checkpoint()
+                }
+                if (!acc.isWithinReconnectGrace(snapshot.tMs)) close(events)
+            }
+        }
+        return events
+    }
+
+    /** Called after a notification action or the UI reassigned [sessionId] to [sourceId]. */
+    suspend fun applySource(sessionId: Long, sourceId: Long) {
+        val open = row ?: return
+        if (open.id != sessionId) return
+        row = open.copy(sourceId = sourceId)
+        source = store.source(sourceId)
+        // Written now, from the tracker's own copy, so an in-flight checkpoint that read the row
+        // just before the reassignment cannot put the old source back.
+        checkpoint(sourceOverride = sourceId)
+    }
+
+    /** Writes the running totals now, e.g. before the service stops. */
+    suspend fun flush() {
+        if (row != null) checkpoint()
+    }
+
+    private suspend fun restore(snapshot: BatterySnapshot, isMock: Boolean, events: MutableList<Event>) {
+        val open = store.openSession() ?: return
+        val resumable = snapshot.isPlugged &&
+            open.plug == snapshot.plug.name &&
+            open.mock == isMock &&
+            snapshot.tMs - open.updatedMs in 0..RESUME_MAX_GAP_MS
+        if (!resumable) {
+            // Totals are as good as the last checkpoint; the level at that time is the best end.
+            store.checkpoint(
+                open.copy(endMs = open.updatedMs, endLevel = open.endLevel ?: open.startLevel),
+                emptyList(),
+            )
+            return
+        }
+        // The interval since the last checkpoint is unknown, so the current reading becomes the
+        // new integration reference rather than being folded against a guessed predecessor.
+        val integratedMs = (open.updatedMs - open.startMs).coerceAtLeast(0L)
+        acc = SessionAccumulator(
+            startMs = open.startMs,
+            last = snapshot,
+            mah = open.mahIn,
+            wh = open.whIn,
+            peakW = open.peakW,
+            maxTempC = open.maxTempC,
+            integratedMs = integratedMs,
+            screenOnMs = (open.screenOnFraction * integratedMs).toLong(),
+            reachedFull = open.reachedFull,
+            startLevel = open.startLevel,
+            endLevel = snapshot.levelPct,
+            sampleCount = open.sampleCount,
+        )
+        row = open
+        source = store.source(open.sourceId)
+        persistedSamples = open.sampleCount
+        lastSampleMs = open.updatedMs
+        lastCheckpointMs = snapshot.tMs
+        lastCounterUah = snapshot.chargeCounterUah
+        startCounterUah = snapshot.chargeCounterUah?.let { now ->
+            open.counterMahIn?.let { now - (it * 1000).toLong() } ?: now
+        }
+        events += Event.Resumed(open)
+    }
+
+    private suspend fun open(snapshot: BatterySnapshot, isMock: Boolean, events: MutableList<Event>) {
+        val decision = SourceResolver.decide(
+            snapshot.plug,
+            settings.lastBankIds.value,
+            settings.lastNonLaptopSourceId.value,
+        )
+        val sourceId = decision.sourceId ?: return
+        val draft = ChargeSession(
+            sourceId = sourceId,
+            plug = snapshot.plug.name,
+            startMs = snapshot.tMs,
+            startLevel = snapshot.levelPct,
+            endLevel = snapshot.levelPct,
+            mock = isMock,
+        )
+        val id = store.startSession(draft)
+        row = draft.copy(id = id)
+        source = store.source(sourceId)
+        acc = SessionAccumulator.EMPTY
+        unpluggedAtMs = null
+        pending.clear()
+        persistedSamples = 0
+        lastSampleMs = Long.MIN_VALUE
+        lastCheckpointMs = snapshot.tMs
+        startCounterUah = snapshot.chargeCounterUah
+        lastCounterUah = snapshot.chargeCounterUah
+        fold(snapshot, persistEveryMs = 0L)
+
+        val recentBanks = settings.lastBankIds.value
+            .mapNotNull { store.source(it) }
+            .filter { it.countsTowardBank && !it.archived }
+        val promptOptions = if (decision.prompt) {
+            recentBanks.take(2) + listOfNotNull(store.source(BuiltInSources.CHARGER_ID))
+        } else {
+            emptyList()
+        }
+        val laptopBank = if (snapshot.plug == PlugType.USB) recentBanks.firstOrNull() else null
+        events += Event.Opened(row!!, source, decision, promptOptions, laptopBank)
+    }
+
+    private suspend fun fold(snapshot: BatterySnapshot, persistEveryMs: Long) {
+        val open = row ?: return
+        acc = acc.fold(snapshot)
+        snapshot.chargeCounterUah?.let { lastCounterUah = it }
+
+        // A little slack so a 10 s cadence whose ticks land at 9.98 s still persists every tick.
+        val slack = minOf(1_000L, persistEveryMs / 4)
+        if (lastSampleMs == Long.MIN_VALUE || snapshot.tMs - lastSampleMs >= persistEveryMs - slack) {
+            pending += snapshot.toSample(open.id)
+            lastSampleMs = snapshot.tMs
+            persistedSamples++
+        }
+        if (snapshot.tMs - lastCheckpointMs >= checkpointMs) checkpoint()
+    }
+
+    private suspend fun checkpoint(sourceOverride: Long? = null, closeAtMs: Long? = null) {
+        val open = row ?: return
+        // Re-read so a source change made elsewhere (session screen) is kept, not overwritten.
+        val stored = store.session(open.id) ?: open
+        val sourceId = sourceOverride ?: stored.sourceId
+        val t = acc.totals
+        val updated = stored.copy(
+            sourceId = sourceId,
+            endMs = closeAtMs,
+            updatedMs = acc.last?.tMs ?: open.updatedMs,
+            endLevel = if (acc.isEmpty) stored.endLevel else t.endLevel,
+            mahIn = t.mah,
+            counterMahIn = counterMah(),
+            whIn = t.wh,
+            peakW = t.peakW,
+            avgW = t.avgW,
+            maxTempC = t.maxTempC,
+            reachedFull = t.reachedFull,
+            usedWhileCharging = t.usedWhileCharging,
+            screenOnFraction = t.screenOnFraction,
+            sampleCount = persistedSamples,
+        )
+        store.checkpoint(updated, pending.toList())
+        pending.clear()
+        lastCheckpointMs = acc.last?.tMs ?: lastCheckpointMs
+        row = updated
+        if (source?.id != sourceId) source = store.source(sourceId)
+    }
+
+    private suspend fun close(events: MutableList<Event>) {
+        val open = row ?: return
+        checkpoint(closeAtMs = acc.last?.tMs ?: open.startMs)
+        val closed = row!!
+        row = null
+        source = null
+        acc = SessionAccumulator.EMPTY
+        unpluggedAtMs = null
+        startCounterUah = null
+        lastCounterUah = null
+        events += Event.Closed(closed)
+    }
+
+    private fun counterMah(): Double? {
+        val start = startCounterUah ?: return null
+        val end = lastCounterUah ?: return null
+        return (end - start) / 1000.0
+    }
+
+    private fun BatterySnapshot.toSample(sessionId: Long) = Sample(
+        sessionId = sessionId,
+        tMs = tMs,
+        mV = voltageMv,
+        mA = currentMa.roundToInt(),
+        level10 = (levelPct * 10).roundToInt(),
+        temp10 = (tempC * 10).roundToInt(),
+        screenOn = screenOn,
+    )
+
+    companion object {
+        /** How often the running totals and buffered samples are written. */
+        const val CHECKPOINT_MS = 60_000L
+
+        /**
+         * An open row older than this after a restart is closed rather than resumed: the phone was
+         * very likely unplugged and replugged while the process was dead.
+         */
+        const val RESUME_MAX_GAP_MS = 10 * 60_000L
+    }
+}
