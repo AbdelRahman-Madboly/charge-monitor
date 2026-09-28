@@ -117,6 +117,9 @@ class SessionTracker(
         } else {
             val open = row
             if (open != null) {
+                // Folding the unplug reading breaks the integration chain, so a quick replug does
+                // not count the unplugged gap as charging time.
+                acc = acc.fold(snapshot)
                 if (unpluggedAtMs == null) {
                     unpluggedAtMs = snapshot.tMs
                     events += Event.Unplugged(open.id)
@@ -251,7 +254,7 @@ class SessionTracker(
         val updated = stored.copy(
             sourceId = sourceId,
             endMs = closeAtMs,
-            updatedMs = acc.last?.tMs ?: open.updatedMs,
+            updatedMs = if (acc.isEmpty) open.updatedMs else acc.totals.lastMs,
             endLevel = if (acc.isEmpty) stored.endLevel else t.endLevel,
             mahIn = t.mah,
             counterMahIn = counterMah(),
@@ -273,7 +276,8 @@ class SessionTracker(
 
     private suspend fun close(events: MutableList<Event>) {
         val open = row ?: return
-        checkpoint(closeAtMs = acc.last?.tMs ?: open.startMs)
+        // The last plugged reading, not the unplug reading that may have been folded after it.
+        checkpoint(closeAtMs = if (acc.isEmpty) open.startMs else acc.totals.lastMs)
         val closed = row!!
         row = null
         source = null

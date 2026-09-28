@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -111,6 +112,12 @@ class ChargeMonitorService : LifecycleService() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(receiver) }
+        // Stop the loop first so the flush cannot interleave with a tick, then write the running
+        // totals; otherwise up to one checkpoint interval of the open session would be lost. The
+        // timeout keeps a slow disk from holding up the main thread.
+        loopJob?.cancel()
+        runCatching { runBlocking { withTimeoutOrNull(FLUSH_TIMEOUT_MS) { tracker.flush() } } }
+            .onFailure { Log.w(TAG, "Final flush failed", it) }
         LiveBus.publish { it.copy(serviceRunning = false) }
         super.onDestroy()
     }
@@ -288,6 +295,7 @@ class ChargeMonitorService : LifecycleService() {
         private const val LIVE_INTERVAL_MS = 2_000L
         private const val WIDGET_INTERVAL_MS = 30_000L
         private const val STATUS_MIN_INTERVAL_MS = 5_000L
+        private const val FLUSH_TIMEOUT_MS = 2_000L
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, ChargeMonitorService::class.java))

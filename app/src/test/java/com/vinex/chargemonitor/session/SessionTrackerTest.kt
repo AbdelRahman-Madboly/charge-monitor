@@ -124,6 +124,20 @@ class SessionTrackerTest {
     }
 
     @Test
+    fun replugWithinGraceDoesNotCountUnpluggedGap() = runTest {
+        val tracker = SessionTracker(store, settings)
+        tracker.onSnapshot(snap(0), false, tenS)
+        tracker.onSnapshot(snap(10_000), false, tenS)
+        val beforeGap = tracker.totals!!.mah
+        tracker.onSnapshot(snap(12_000, PlugType.NONE), false, tenS)
+        tracker.onSnapshot(snap(40_000), false, tenS)
+
+        // 10 s at 2 A before the blip; the 30 s spent unplugged adds nothing.
+        assertEquals(2000.0 * 10 / 3600, beforeGap, 1e-9)
+        assertEquals(beforeGap, tracker.totals!!.mah, 1e-9)
+    }
+
+    @Test
     fun unplugPastGraceClosesAtLastPluggedReading() = runTest {
         val tracker = SessionTracker(store, settings)
         tracker.onSnapshot(snap(0, level = 40f), false, tenS)
