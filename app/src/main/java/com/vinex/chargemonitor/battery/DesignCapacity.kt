@@ -12,7 +12,8 @@ import kotlin.math.roundToInt
  * user enters the figure in Settings instead.
  */
 object DesignCapacity {
-    private val PLAUSIBLE_MAH = 1_000..20_000
+    // AOSP ships 1000 mAh as a placeholder (emulators report it), so the floor sits above it.
+    private val PLAUSIBLE_MAH = 1_500..20_000
 
     @SuppressLint("PrivateApi")
     fun fromPowerProfile(context: Context): Int? = runCatching {
