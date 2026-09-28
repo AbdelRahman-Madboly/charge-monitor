@@ -60,7 +60,11 @@ fun AppScaffold(pickSourceFor: Long? = null, onPickSourceHandled: () -> Unit = {
     val settings = ServiceLocator.settings
     val onboarded by settings.onboardingDone.flow.collectAsState()
     if (!onboarded) {
-        OnboardingScreen(onDone = { settings.onboardingDone.set(true) })
+        // Surface supplies onBackground as the content colour; without it untinted text is black
+        // on the dark theme.
+        androidx.compose.material3.Surface(color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
+            OnboardingScreen(onDone = { settings.onboardingDone.set(true) })
+        }
         return
     }
     val nav = rememberNavController()

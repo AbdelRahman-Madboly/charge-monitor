@@ -65,6 +65,9 @@ class SessionTracker(
             val laptopBank: PowerSource?,
         ) : Event
 
+        /** An unconfirmed AC session turned out to be a computer's USB port, see [BatteryReader]. */
+        data class BecameLaptop(val session: ChargeSession, val laptopBank: PowerSource?) : Event
+
         data class Resumed(val session: ChargeSession) : Event
         data class Unplugged(val sessionId: Long) : Event
         data class Reconnected(val sessionId: Long) : Event
@@ -88,7 +91,11 @@ class SessionTracker(
     val sessionId: Long? get() = row?.id
     val hasOpenSession: Boolean get() = row != null
     val sourceConfirmed: Boolean get() = row?.sourceConfirmed == true
-    val totals: SessionTotals? get() = if (row != null && !acc.isEmpty) acc.totals else null
+    val totals: SessionTotals? get() = if (row != null && !acc.isEmpty) {
+        acc.totals.let { t -> bestTotals(t).let { t.copy(mah = it.mah, wh = it.wh) } }
+    } else {
+        null
+    }
 
     /**
      * Feeds one reading. [persistEveryMs] is the sample persistence cadence (the settings
@@ -116,6 +123,12 @@ class SessionTracker(
                 } else {
                     close(events)
                 }
+            } else if (open != null && open.plug == PlugType.AC.name && snapshot.plug == PlugType.USB &&
+                !open.sourceConfirmed
+            ) {
+                // The computer's data link enumerates a moment after power arrives, so a laptop
+                // first reads as AC. Same physical charge: relabel it rather than split it.
+                becameLaptop(open, events)
             } else if (open != null && open.plug != snapshot.plug.name) {
                 // Swapped cables faster than the unplug broadcast could be noticed.
                 close(events)
@@ -147,6 +160,16 @@ class SessionTracker(
         // Written now, from the tracker's own copy, so an in-flight checkpoint that read the row
         // just before the reassignment cannot put the old source back.
         checkpoint(sourceOverride = sourceId)
+    }
+
+    private suspend fun becameLaptop(open: ChargeSession, events: MutableList<Event>) {
+        row = open.copy(plug = PlugType.USB.name, sourceId = BuiltInSources.LAPTOP_ID, sourceConfirmed = true)
+        source = store.source(BuiltInSources.LAPTOP_ID)
+        checkpoint(sourceOverride = BuiltInSources.LAPTOP_ID)
+        val laptopBank = settings.lastBankIds.value
+            .mapNotNull { store.source(it) }
+            .firstOrNull { it.countsTowardBank && !it.archived }
+        events += Event.BecameLaptop(row!!, laptopBank)
     }
 
     /** Writes the running totals now, e.g. before the service stops. */
@@ -303,8 +326,11 @@ class SessionTracker(
         val stored = store.session(open.id) ?: open
         val sourceId = sourceOverride ?: stored.sourceId
         val t = acc.totals
+        val best = bestTotals(t)
         val updated = stored.copy(
             sourceId = sourceId,
+            // The tracker owns the plug; it changes only when an AC session turns out to be a laptop.
+            plug = open.plug,
             // Confirmation only ever goes one way: from the prompt, the picker or History.
             sourceConfirmed = stored.sourceConfirmed || open.sourceConfirmed || sourceOverride != null,
             unpluggedAtMs = if (closeAtMs != null) null else unpluggedAtMs,
@@ -312,9 +338,9 @@ class SessionTracker(
             endMs = closeAtMs,
             updatedMs = if (acc.isEmpty) open.updatedMs else acc.totals.lastMs,
             endLevel = if (acc.isEmpty) stored.endLevel else t.endLevel,
-            mahIn = t.mah,
+            mahIn = best.mah,
             counterMahIn = counterMah(),
-            whIn = t.wh,
+            whIn = best.wh,
             peakW = t.peakW,
             avgW = t.avgW,
             maxTempC = t.maxTempC,
@@ -344,6 +370,22 @@ class SessionTracker(
         events += Event.Closed(closed)
     }
 
+    /**
+     * Charge and energy to report. The fuel gauge's own counter wins once it has moved enough
+     * to outweigh its step size: sampling a current that swings between +0.6 A and -1.2 A every
+     * few seconds (phone in use) misses most of it; on a Galaxy A54 a 10 s integral read 12 mAh
+     * where the counter read 20. Energy keeps the integral's average voltage.
+     */
+    private fun bestTotals(t: SessionTotals): Totals {
+        val counter = counterMah()
+        if (counter == null || counter < COUNTER_TRUST_MAH) return Totals(t.mah, t.wh)
+        val meanV = if (t.mah > 1.0) t.wh * 1000.0 / t.mah else null
+        val v = meanV?.takeIf { it in 3.0..4.6 } ?: ((acc.last?.voltageMv ?: 3_850) / 1000.0)
+        return Totals(counter, counter * v / 1000.0)
+    }
+
+    private data class Totals(val mah: Double, val wh: Double)
+
     private fun counterMah(): Double? {
         val start = startCounterUah ?: return null
         val end = lastCounterUah ?: return null
@@ -372,5 +414,8 @@ class SessionTracker(
 
         /** Heavy use while plugged can drain a little; more than this was a real unplug. */
         const val COUNTER_DROP_TOLERANCE_UAH = 50_000L
+
+        /** Six steps of the 5 mAh counter a Galaxy reports; below this the integral is finer. */
+        const val COUNTER_TRUST_MAH = 30.0
     }
 }

@@ -156,6 +156,54 @@ class SessionTrackerTest {
     }
 
     @Test
+    fun chargeCounterOverridesNoisyIntegralOnceItMovesEnough() = runTest {
+        val tracker = SessionTracker(store, settings, checkpointMs = 0L)
+        // Sampled current alternates sign (phone in use), so the integral nets out near zero,
+        // while the gauge's counter climbs 100 mAh.
+        for (i in 0..10) {
+            val base = snap(i * 10_000L)
+            tracker.onSnapshot(
+                base.copy(
+                    currentMa = if (i % 2 == 0) 900.0 else -800.0,
+                    chargeCounterUah = 2_000_000L + i * 10_000L,
+                ),
+                false,
+                tenS,
+            )
+        }
+        val row = store.sessions.values.single()
+        assertEquals(100.0, row.mahIn, 0.01)
+        assertEquals(100.0, row.counterMahIn!!, 0.01)
+        assertEquals(100.0, tracker.totals!!.mah, 0.01)
+        assertTrue(row.whIn > 0.3 && row.whIn < 0.46)
+    }
+
+    @Test
+    fun unconfirmedAcSessionBecomesLaptopWhenDataLinkAppears() = runTest {
+        val tracker = SessionTracker(store, settings)
+        tracker.onSnapshot(snap(0), false, tenS)
+        val events = tracker.onSnapshot(snap(2_000, PlugType.USB), false, tenS)
+
+        assertTrue(events.single() is SessionTracker.Event.BecameLaptop)
+        assertEquals(1, store.sessions.size)
+        val row = store.sessions.values.single()
+        assertEquals(BuiltInSources.LAPTOP_ID, row.sourceId)
+        assertEquals("USB", row.plug)
+        assertTrue(row.sourceConfirmed)
+    }
+
+    @Test
+    fun confirmedAcSessionIsNotRelabelledAsLaptop() = runTest {
+        val tracker = SessionTracker(store, settings)
+        tracker.onSnapshot(snap(0), false, tenS)
+        tracker.applySource(tracker.sessionId!!, BuiltInSources.CHARGER_ID)
+        val events = tracker.onSnapshot(snap(2_000, PlugType.USB), false, tenS)
+
+        assertTrue(events[0] is SessionTracker.Event.Closed)
+        assertEquals(2, store.sessions.size)
+    }
+
+    @Test
     fun replugWithDifferentPlugStartsNewSession() = runTest {
         val tracker = SessionTracker(store, settings)
         tracker.onSnapshot(snap(0), false, tenS)

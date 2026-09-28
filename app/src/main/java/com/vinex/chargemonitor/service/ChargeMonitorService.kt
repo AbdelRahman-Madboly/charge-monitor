@@ -76,7 +76,7 @@ class ChargeMonitorService : LifecycleService() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_POWER_CONNECTED, Intent.ACTION_POWER_DISCONNECTED -> kick()
+                Intent.ACTION_POWER_CONNECTED, Intent.ACTION_POWER_DISCONNECTED, ACTION_USB_STATE -> kick()
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                     val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
@@ -159,6 +159,8 @@ class ChargeMonitorService : LifecycleService() {
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            // A computer's data link appearing turns an AC session into a laptop one.
+            addAction(ACTION_USB_STATE)
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -272,6 +274,10 @@ class ChargeMonitorService : LifecycleService() {
                 }
             }
             is SessionTracker.Event.Unplugged -> pushWidget(snapshot, tracker.source, charging = false)
+            is SessionTracker.Event.BecameLaptop -> {
+                Notifications.cancelPrompt(this)
+                Notifications.showLaptopNotice(this, event.session.id, event.laptopBank)
+            }
             is SessionTracker.Event.Closed -> Notifications.cancelPrompt(this)
             is SessionTracker.Event.Resumed -> alertState = AlertRules.resumedState(event.session, alertConfig())
             is SessionTracker.Event.Reconnected -> Unit
@@ -331,6 +337,7 @@ class ChargeMonitorService : LifecycleService() {
 
     companion object {
         private const val TAG = "ChargeMonitorService"
+        private const val ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE"
         private const val LIVE_INTERVAL_MS = 2_000L
         private const val WIDGET_INTERVAL_MS = 30_000L
         private const val STATUS_MIN_INTERVAL_MS = 5_000L

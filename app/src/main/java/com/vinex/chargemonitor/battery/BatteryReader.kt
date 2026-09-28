@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 
 /**
@@ -43,7 +44,7 @@ class BatteryReader(
             // Docks report as AC for source-selection purposes.
             BatteryManager.BATTERY_PLUGGED_DOCK -> PlugType.AC
             else -> PlugType.NONE
-        }
+        }.let { if (it == PlugType.AC && usbHostConnected()) PlugType.USB else it }
         val status = when (sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)) {
             BatteryManager.BATTERY_STATUS_CHARGING -> ChargeStatus.CHARGING
             BatteryManager.BATTERY_STATUS_FULL -> ChargeStatus.FULL
@@ -74,6 +75,29 @@ class BatteryReader(
             status = status,
             screenOn = powerManager?.isInteractive ?: false,
         )
+    }
+
+    /**
+     * True when the port is a USB data connection to a computer. A laptop's USB-C port can
+     * negotiate fast charging, and Samsung then reports it as AC (seen on a Galaxy A54), so the
+     * plug type alone cannot tell it from a charger. Chargers and power banks never enumerate,
+     * so a data link settles it. The link comes up a moment after power does; the tracker
+     * reclassifies an unconfirmed AC session when that happens.
+     */
+    private fun usbHostConnected(): Boolean = runCatching {
+        val filter = IntentFilter(ACTION_USB_STATE)
+        val state = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            appContext.registerReceiver(null, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            appContext.registerReceiver(null, filter)
+        }
+        state?.getBooleanExtra(USB_CONNECTED, false) == true
+    }.getOrDefault(false)
+
+    private companion object {
+        // Hidden in UsbManager, but a sticky system broadcast any app can read.
+        const val ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE"
+        const val USB_CONNECTED = "connected"
     }
 }
 
