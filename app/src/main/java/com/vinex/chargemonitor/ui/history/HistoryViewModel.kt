@@ -8,6 +8,7 @@ import com.vinex.chargemonitor.ServiceLocator
 import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.Repository
+import com.vinex.chargemonitor.ui.SessionActions
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -55,6 +56,12 @@ class HistoryViewModel(
                 ),
             )
         }
+    }
+
+    /** Keeps the guessed source and marks it as the user's choice. */
+    fun confirm(context: Context, sessionId: Long, source: PowerSource) {
+        val app = context.applicationContext
+        viewModelScope.launch { SessionActions.reassign(app, sessionId, source) }
     }
 
     companion object {

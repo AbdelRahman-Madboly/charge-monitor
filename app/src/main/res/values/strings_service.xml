@@ -26,5 +26,5 @@
     <string name="widget_level_source">%1$.0f%% · %2$s</string>
     <string name="widget_level_idle">Not charging · %1$.0f%%</string>
     <string name="widget_watts">%1$.1f W</string>
-    <string name="widget_bank_total">%1$.2f bank charges</string>
+    <string name="widget_bank_total">%1$s: %2$.2f full charges</string>
 </resources>

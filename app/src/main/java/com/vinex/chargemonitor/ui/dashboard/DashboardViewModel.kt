@@ -3,6 +3,8 @@ package com.vinex.chargemonitor.ui.dashboard
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vinex.chargemonitor.ServiceLocator
+import com.vinex.chargemonitor.data.BankEvent
+import com.vinex.chargemonitor.data.BankEventKind
 import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.Repository
@@ -14,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /** Everything one source's card shows. */
 data class SourceCard(
@@ -28,6 +31,11 @@ data class SourceCard(
     val capacity: StatsCalculator.CapacityEstimate?,
     /** Sessions left out of the estimate because the phone was in use. */
     val usedExcluded: Int,
+    /** Bank sessions whose source was guessed (prompt unanswered); not in any figure above. */
+    val unconfirmedCount: Int = 0,
+    val unconfirmedFullCharges: Double = 0.0,
+    /** The bank's most recent refill mark, for the "last marked" line and undo. */
+    val lastMark: BankEvent? = null,
 )
 
 data class DashboardUi(
@@ -44,7 +52,7 @@ data class DashboardUi(
 )
 
 class DashboardViewModel(
-    repository: Repository = ServiceLocator.repository,
+    private val repository: Repository = ServiceLocator.repository,
     private val settings: SettingsStore = ServiceLocator.settings,
 ) : ViewModel() {
 
@@ -55,9 +63,11 @@ class DashboardViewModel(
         repository.observeSessions(),
         filter,
         settings.includeUsedWhileCharging.flow,
-        combine(settings.lossFactor.flow, settings.designCapacityMah.flow) { l, d -> l to d },
-    ) { sources, sessions, selected, includeUsed, (loss, design) ->
-        build(sources, sessions, selected, includeUsed, loss, design)
+        combine(settings.lossFactor.flow, settings.designCapacityMah.flow, repository.observeBankEvents()) { l, d, e ->
+            Triple(l, d, e)
+        },
+    ) { sources, sessions, selected, includeUsed, (loss, design, events) ->
+        build(sources, sessions, selected, includeUsed, loss, design, events)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUi())
 
     fun setFilter(sourceId: Long?) {
@@ -66,6 +76,16 @@ class DashboardViewModel(
 
     fun setIncludeUsed(include: Boolean) = settings.includeUsedWhileCharging.set(include)
 
+    fun markBank(sourceId: Long, kind: BankEventKind) {
+        viewModelScope.launch {
+            repository.addBankEvent(BankEvent(sourceId = sourceId, tMs = System.currentTimeMillis(), kind = kind))
+        }
+    }
+
+    fun undoMark(eventId: Long) {
+        viewModelScope.launch { repository.deleteBankEvent(eventId) }
+    }
+
     private fun build(
         sources: List<PowerSource>,
         sessions: List<ChargeSession>,
@@ -73,6 +93,7 @@ class DashboardViewModel(
         includeUsed: Boolean,
         loss: Float,
         design: Int,
+        events: List<BankEvent>,
     ): DashboardUi {
         val closed = sessions.filter { !it.isOpen && !it.mock }
         val bySource = closed.groupBy { it.sourceId }
@@ -85,7 +106,11 @@ class DashboardViewModel(
         }.sortedWith(compareBy<PowerSource> { it.kind != SourceKind.POWER_BANK }.thenBy { it.builtIn }.thenBy { it.name.lowercase() })
 
         val cards = shown.map { s ->
-            val own = bySource[s.id].orEmpty()
+            val isBank = s.kind == SourceKind.POWER_BANK
+            val all = bySource[s.id].orEmpty()
+            // A guessed source must not feed a bank; built-ins keep every session.
+            val own = if (isBank) all.filter { it.sourceConfirmed } else all
+            val unconfirmed = if (isBank) all.filterNot { it.sourceConfirmed } else emptyList()
             val admitted = own.filter { includeUsed || !it.usedWhileCharging }
             SourceCard(
                 source = s,
@@ -93,16 +118,23 @@ class DashboardViewModel(
                 whIn = own.sumOf { it.whIn },
                 sessionCount = own.size,
                 avgW = admitted.takeIf { it.isNotEmpty() }?.map { it.avgW }?.average(),
-                capacity = if (s.kind == SourceKind.POWER_BANK) {
-                    StatsCalculator.bankCapacityEstimate(own, s, loss.toDouble(), includeUsed)
+                capacity = if (isBank) {
+                    StatsCalculator.bankCapacityEstimate(all, s, loss.toDouble(), includeUsed, events)
                 } else {
                     null
                 },
                 usedExcluded = if (includeUsed) 0 else own.count { it.usedWhileCharging },
+                unconfirmedCount = unconfirmed.size,
+                unconfirmedFullCharges = StatsCalculator.fullChargeEquivalents(unconfirmed),
+                lastMark = if (isBank) events.lastOrNull { it.sourceId == s.id } else null,
             )
         }
 
-        val chart = (if (filter == null) closed else bySource[filter].orEmpty()).sortedBy { it.startMs }
+        val kindOf = sources.associate { it.id to it.kind }
+        val chart = closed
+            .filter { filter == null || it.sourceId == filter }
+            .filter { it.sourceConfirmed || kindOf[it.sourceId] != SourceKind.POWER_BANK }
+            .sortedBy { it.startMs }
 
         return DashboardUi(
             sources = sources,

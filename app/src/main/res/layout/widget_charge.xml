@@ -38,6 +38,7 @@
             android:id="@+id/widget_bank_total"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:ellipsize="end"
             android:maxLines="1"
             android:text="@string/widget_placeholder_bank"
             android:textColor="#B3FFFFFF"

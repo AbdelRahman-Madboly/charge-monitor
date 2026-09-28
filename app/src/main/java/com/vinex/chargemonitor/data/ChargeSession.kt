@@ -50,6 +50,16 @@ data class ChargeSession(
     val sampleCount: Int = 0,
     /** Session recorded from the mock source; hidden from totals. */
     val mock: Boolean = false,
+    /**
+     * The user chose [sourceId] (prompt button, picker, or a confirm in History), or the plug
+     * type decided it outright (USB, wireless). An AC session whose prompt went unanswered keeps
+     * a guessed source and stays out of power bank totals until confirmed.
+     */
+    val sourceConfirmed: Boolean = false,
+    /** Set while the phone is unplugged inside the reconnect grace, so a restart can tell. */
+    val unpluggedAtMs: Long? = null,
+    /** Charge counter at the last plugged reading; lets a restart bridge the time it was dead. */
+    val lastCounterUah: Long? = null,
 ) {
     val isOpen: Boolean get() = endMs == null
 

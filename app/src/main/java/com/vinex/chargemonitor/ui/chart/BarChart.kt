@@ -150,7 +150,7 @@ fun BarChart(
             if (i % labelEvery != 0 && i != bars.size - 1) return@forEachIndexed
             val m = measurer.measure(b.label, labelStyle)
             val cx = padL + i * slot + slot / 2
-            val lx = (cx - m.size.width / 2).coerceIn(padL, padL + plotW - m.size.width)
+            val lx = (cx - m.size.width / 2).coerceIn(padL, (padL + plotW - m.size.width).coerceAtLeast(padL))
             if (lx > lastRight + 6.dp.toPx()) {
                 drawText(m, topLeft = Offset(lx, padT + plotH + 4.dp.toPx()))
                 lastRight = lx + m.size.width

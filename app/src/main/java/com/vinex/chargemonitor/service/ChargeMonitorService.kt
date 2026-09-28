@@ -22,6 +22,7 @@ import com.vinex.chargemonitor.notify.NotificationActionReceiver
 import com.vinex.chargemonitor.notify.Notifications
 import com.vinex.chargemonitor.session.RepositorySessionStore
 import com.vinex.chargemonitor.session.SessionTracker
+import com.vinex.chargemonitor.widget.BankTotal
 import com.vinex.chargemonitor.widget.ChargeWidgetProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -63,10 +64,14 @@ class ChargeMonitorService : LifecycleService() {
     private var widgetPushedMs = 0L
     private val sourceChanges = ArrayDeque<NotificationActionReceiver.SourceChange>()
 
-    // Last plug/status seen by the receiver; BATTERY_CHANGED fires every few seconds on some
-    // phones, so it only wakes the loop when one of these actually changes.
+    // Last plug/status/level seen by the receiver; BATTERY_CHANGED fires every few seconds on
+    // some phones, so it only wakes the loop when one of these actually changes.
     private var lastPlugged: Int? = null
     private var lastStatus: Int? = null
+    private var lastLevel: Int? = null
+
+    /** False when the system refused the foreground start; the service is then stopping. */
+    private var foreground = false
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -75,9 +80,15 @@ class ChargeMonitorService : LifecycleService() {
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                     val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                    val changed = plugged != lastPlugged || status != lastStatus
+                    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                    // A level step while plugged also wakes the loop: with the screen off the CPU
+                    // can suspend between ticks, and this broadcast is delivered anyway, so every
+                    // 1 % gets at least one sample (target alert, time to full, chart).
+                    val changed = plugged != lastPlugged || status != lastStatus ||
+                        (plugged != 0 && level != lastLevel)
                     lastPlugged = plugged
                     lastStatus = status
+                    lastLevel = level
                     if (changed) kick()
                 }
                 // Only matters mid-session, where it sharpens the screen-on attribution.
@@ -92,12 +103,24 @@ class ChargeMonitorService : LifecycleService() {
         super.onCreate()
         // Called here, not only in the app, so a restart by the system after a crash is covered.
         Notifications.createChannels(this)
-        ServiceCompat.startForeground(
-            this,
-            Notifications.ID_STATUS,
-            Notifications.status(this),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-        )
+        try {
+            ServiceCompat.startForeground(
+                this,
+                Notifications.ID_STATUS,
+                Notifications.status(this),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException (an IllegalStateException, API 31+) when a
+            // START_STICKY restart happens in the background without the battery exemption.
+            // Crashing here would only make the system back off further; stop cleanly and let
+            // the Live screen say monitoring is off until the app is opened.
+            Log.w(TAG, "Foreground start refused", e)
+            LiveBus.publish { it.copy(serviceRunning = false) }
+            stopSelf()
+            return
+        }
+        foreground = true
         LiveBus.publish { it.copy(serviceRunning = true) }
         registerPowerReceiver()
         observeTriggers()
@@ -105,6 +128,7 @@ class ChargeMonitorService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (!foreground) return START_NOT_STICKY
         // One read decides everything: resume an open session, start one, or stop straight away.
         kick()
         return START_STICKY
@@ -112,6 +136,10 @@ class ChargeMonitorService : LifecycleService() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(receiver) }
+        if (!foreground) {
+            super.onDestroy()
+            return
+        }
         // Stop the loop first so the flush cannot interleave with a tick, then write the running
         // totals; otherwise up to one checkpoint interval of the open session would be lost. The
         // timeout keeps a slow disk from holding up the main thread.
@@ -144,9 +172,16 @@ class ChargeMonitorService : LifecycleService() {
 
     private fun observeTriggers() {
         lifecycleScope.launch {
-            // Switch to the 2 s cadence as soon as the Live screen appears.
+            // Switch to the 2 s cadence as soon as the Live screen appears. While unplugged the
+            // loop is stopped and the last snapshot may be hours old, so one fresh read is taken
+            // for the idle screen (the loop ends again right after it).
             LiveBus.state.map { it.liveVisible }.distinctUntilChanged().drop(1)
-                .collect { if (loopRunning) wake.trySend(Unit) }
+                .collect { visible ->
+                    when {
+                        loopRunning -> wake.trySend(Unit)
+                        visible -> kick()
+                    }
+                }
         }
         lifecycleScope.launch {
             settings.mockMode.flow.drop(1).collect { kick() }
@@ -238,7 +273,8 @@ class ChargeMonitorService : LifecycleService() {
             }
             is SessionTracker.Event.Unplugged -> pushWidget(snapshot, tracker.source, charging = false)
             is SessionTracker.Event.Closed -> Notifications.cancelPrompt(this)
-            is SessionTracker.Event.Resumed, is SessionTracker.Event.Reconnected -> Unit
+            is SessionTracker.Event.Resumed -> alertState = AlertRules.resumedState(event.session, alertConfig())
+            is SessionTracker.Event.Reconnected -> Unit
         }
     }
 
@@ -272,21 +308,24 @@ class ChargeMonitorService : LifecycleService() {
     }
 
     private suspend fun pushWidget(snapshot: BatterySnapshot, source: PowerSource?, charging: Boolean) {
-        val bankTotal = source?.takeIf { it.countsTowardBank }?.let { bankFullCharges(it) }
+        val bankTotal = source?.takeIf { it.countsTowardBank }?.let { BankTotal(it.name, bankFullCharges(it)) }
         ChargeWidgetProvider.push(
             this,
             watts = if (charging) snapshot.powerW else null,
             levelPct = snapshot.levelPct,
             sourceName = if (charging) source?.name else null,
-            bankFullCharges = bankTotal,
+            bank = bankTotal,
         )
     }
 
-    /** Closed sessions of [bank] plus the level added so far in the open one. */
+    /**
+     * Confirmed closed sessions of [bank] plus the level added so far in the open one, if the
+     * user has confirmed that it is this bank.
+     */
     private suspend fun bankFullCharges(bank: PowerSource): Double {
         val closed = ServiceLocator.repository.observeTotals(includeUsedWhileCharging = true).first()
             .firstOrNull { it.sourceId == bank.id }?.levelAdded ?: 0.0
-        val current = tracker.totals?.levelAdded?.toDouble() ?: 0.0
+        val current = if (tracker.sourceConfirmed) tracker.totals?.levelAdded?.toDouble() ?: 0.0 else 0.0
         return (closed + current) / 100.0
     }
 
@@ -297,8 +336,13 @@ class ChargeMonitorService : LifecycleService() {
         private const val STATUS_MIN_INTERVAL_MS = 5_000L
         private const val FLUSH_TIMEOUT_MS = 2_000L
 
+        /** Never throws: a refused start leaves the Live screen's "not running" warning up. */
         fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, ChargeMonitorService::class.java))
+            try {
+                ContextCompat.startForegroundService(context, Intent(context, ChargeMonitorService::class.java))
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Service start refused", e)
+            }
         }
     }
 }

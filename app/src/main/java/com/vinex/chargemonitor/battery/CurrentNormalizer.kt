@@ -1,6 +1,7 @@
 package com.vinex.chargemonitor.battery
 
 import kotlin.math.abs
+import kotlin.math.ln
 
 /** User override from Settings; [AUTO] lets [CurrentNormalizer] decide from observed values. */
 enum class CurrentUnit { AUTO, MICRO, MILLI }
@@ -16,17 +17,25 @@ fun interface VerdictSink {
  * Pure: no Android calls. Stateful only through [verdict], which is handed to [sink] (see
  * [Verdict.encode]) so a detection made on one charge survives process death.
  *
- * How it learns:
- * - Scale, only from plugged + CHARGING readings. A charging phone takes roughly 0.1–6 A, so
- *   |raw| in [MILLI_MIN, MILLI_MAX] can only be mA (in µA it would be under 10 mA) and
- *   |raw| >= [MICRO_MIN] can only be µA (in mA it would be over 30 A). The band in between,
- *   and anything tiny, is ambiguous and ignored.
- * - Sign, from plugged + CHARGING (should be positive) and unplugged + DISCHARGING (should be
- *   negative). Readings below [SIGN_MIN_MA] are too close to zero to trust.
- * - Each property keeps an evidence counter with hysteresis: agreeing readings add one (capped),
- *   disagreeing ones subtract one, and the verdict only flips once the counter is exhausted. A
- *   fresh install flips on the first clear reading; a well-established verdict survives a few
- *   odd readings such as a phone under heavy load while plugged.
+ * How it learns, strongest evidence first:
+ * - Charge-counter slope. When the reading carries a charge counter, readings are gathered into
+ *   windows of at least [SLOPE_WINDOW_MS] and [SLOPE_MIN_DELTA_UAH]. The counter's slope is the
+ *   true net current, so whichever of `raw / 1000` (µA) or `raw` (mA) matches it within a
+ *   factor of [SLOPE_MATCH_FACTOR] is the unit, and the direction the counter moved fixes the
+ *   sign. Such a vote carries [CORROBORATED_WEIGHT] and can overturn an established verdict.
+ *   A slow window (trickle, protect-battery hold, use cancelling the input) never reaches the
+ *   minimum delta and so never votes, which is exactly the case the magnitude rule gets wrong.
+ * - Magnitude, only while the verdict is still young (evidence below [LOCK_EVIDENCE]), plugged,
+ *   CHARGING and at most [MAX_LEVEL_FOR_MAGNITUDE] %. A phone charging properly takes roughly
+ *   0.1–6 A, so |raw| in [MILLI_MIN, MILLI_MAX] reads as mA and |raw| >= [MICRO_MIN] as µA. Near
+ *   full, or with the net current near zero, that assumption fails (3 000 µA is 3 mA, not 3 A),
+ *   which is why this rule gets a fresh install going but cannot flip a settled verdict.
+ * - Sign from status: plugged + CHARGING should be positive, but only once the current is at
+ *   least [SIGN_MIN_CHARGING_MA] and the verdict is young, because heavy use can hold the net
+ *   current negative for a long time while the status still says CHARGING. Unplugged +
+ *   DISCHARGING should be negative (from [SIGN_MIN_MA]); that one cannot be fooled.
+ * - Each property keeps an evidence counter with hysteresis: agreeing votes add, disagreeing
+ *   ones subtract, and the verdict only flips once the counter is exhausted.
  *
  * [override] MICRO or MILLI fixes the scale for output; learning continues underneath so that
  * switching back to AUTO starts from a good verdict. It is a `var` so Settings can change it
@@ -78,10 +87,20 @@ class CurrentNormalizer(
     /**
      * Records one observation (which may refine [verdict]) and returns the normalised current
      * in mA, positive into the battery. Never throws; always finite.
+     *
+     * [levelPct], [counterUah] and [tMs] are optional context: without them only the magnitude
+     * and status rules apply.
      */
     @Synchronized
-    fun normalize(raw: Long, status: ChargeStatus, plug: PlugType): Double {
-        learn(raw, status, plug)
+    fun normalize(
+        raw: Long,
+        status: ChargeStatus,
+        plug: PlugType,
+        levelPct: Float? = null,
+        counterUah: Long? = null,
+        tMs: Long? = null,
+    ): Double {
+        learn(raw, status, plug, levelPct, counterUah, tMs)
         val scale = when (override) {
             CurrentUnit.MICRO -> Scale.MICRO
             CurrentUnit.MILLI -> Scale.MILLI
@@ -91,15 +110,33 @@ class CurrentNormalizer(
         return if (verdict.invertSign) -ma else ma
     }
 
-    private fun learn(raw: Long, status: ChargeStatus, plug: PlugType) {
+    // Slope window: the counter and time at its start, and the raw readings seen since.
+    private var windowStartMs: Long? = null
+    private var windowStartCounter: Long = 0L
+    private var windowLastMs: Long = 0L
+    private var windowRawSum: Double = 0.0
+    private var windowReadings: Int = 0
+
+    /** Direction of the last conclusive counter window; null until one completes. */
+    private var lastSlopePositive: Boolean? = null
+
+    private fun learn(
+        raw: Long,
+        status: ChargeStatus,
+        plug: PlugType,
+        levelPct: Float?,
+        counterUah: Long?,
+        tMs: Long?,
+    ) {
         // Long.MIN_VALUE has no positive counterpart; it is also the platform's "unsupported".
         if (raw == Long.MIN_VALUE || raw == 0L) return
         val magnitude = abs(raw)
         val before = verdict
-        var next = before
+        var next = slopeVote(before, raw, plug, counterUah, tMs)
 
         val chargingPlugged = plug != PlugType.NONE && status == ChargeStatus.CHARGING
-        if (chargingPlugged) {
+        val nearFull = levelPct != null && levelPct > MAX_LEVEL_FOR_MAGNITUDE
+        if (chargingPlugged && !nearFull && next.evidence < LOCK_EVIDENCE) {
             val observedScale = when {
                 magnitude >= MICRO_MIN -> Scale.MICRO
                 magnitude in MILLI_MIN..MILLI_MAX -> Scale.MILLI
@@ -111,20 +148,19 @@ class CurrentNormalizer(
             }
         }
 
-        // Sign needs a magnitude that is not noise in the unit just decided (scale runs first, so
-        // a Samsung mA reading flips the scale and then counts for the sign on the same tick).
-        val signFloor = if (next.scale == Scale.MICRO) SIGN_MIN_MA * 1000 else SIGN_MIN_MA
-        if (magnitude >= signFloor) {
-            val shouldBePositive = when {
-                chargingPlugged -> true
-                plug == PlugType.NONE && status == ChargeStatus.DISCHARGING -> false
-                else -> null
-            }
-            if (shouldBePositive != null) {
-                val observedInvert = (raw > 0) != shouldBePositive
-                val (invert, evidence) = vote(next.invertSign, next.signEvidence, observedInvert)
-                next = next.copy(invertSign = invert, signEvidence = evidence)
-            }
+        // Scale runs first, so a Samsung mA reading flips the scale and then counts for the sign
+        // on the same tick, measured in the unit just decided.
+        val ma = if (next.scale == Scale.MICRO) magnitude / 1000.0 else magnitude.toDouble()
+        val shouldBePositive = when {
+            plug == PlugType.NONE && status == ChargeStatus.DISCHARGING && ma >= SIGN_MIN_MA -> false
+            chargingPlugged && !nearFull && ma >= SIGN_MIN_CHARGING_MA &&
+                next.signEvidence < LOCK_EVIDENCE && lastSlopePositive != false -> true
+            else -> null
+        }
+        if (shouldBePositive != null) {
+            val observedInvert = (raw > 0) != shouldBePositive
+            val (invert, evidence) = vote(next.invertSign, next.signEvidence, observedInvert)
+            next = next.copy(invertSign = invert, signEvidence = evidence)
         }
 
         if (next != before) {
@@ -133,20 +169,84 @@ class CurrentNormalizer(
         }
     }
 
-    /** Hysteresis counter: returns the (possibly flipped) value and its new evidence. */
-    private fun <T> vote(current: T, evidence: Int, observed: T): Pair<T, Int> = when {
-        observed == current -> current to (evidence + 1).coerceAtMost(MAX_EVIDENCE)
-        evidence > 0 -> current to evidence - 1
-        else -> observed to 1
+    /**
+     * Adds [raw] to the current counter window and, when the window is conclusive, returns
+     * [from] updated with one weighted vote for scale and sign. Unplugging, a missing counter or
+     * a stalled window starts over, so a window never spans a change of state.
+     */
+    private fun slopeVote(from: Verdict, raw: Long, plug: PlugType, counterUah: Long?, tMs: Long?): Verdict {
+        val start = windowStartMs
+        if (plug == PlugType.NONE || counterUah == null || tMs == null ||
+            start == null || tMs <= windowLastMs || tMs - start > SLOPE_WINDOW_MAX_MS
+        ) {
+            if (plug != PlugType.NONE && counterUah != null && tMs != null) {
+                resetWindow(tMs, counterUah)
+            } else {
+                windowStartMs = null
+            }
+            return from
+        }
+        windowLastMs = tMs
+        windowRawSum += raw
+        windowReadings++
+
+        val deltaUah = counterUah - windowStartCounter
+        val elapsedMs = tMs - start
+        if (elapsedMs < SLOPE_WINDOW_MS || abs(deltaUah) < SLOPE_MIN_DELTA_UAH) return from
+
+        val slopeMa = deltaUah * MS_PER_HOUR / elapsedMs / 1000.0
+        val meanRaw = windowRawSum / windowReadings
+        resetWindow(tMs, counterUah)
+        return judgeWindow(from, slopeMa, meanRaw)
     }
 
-    // Saving on every tick would write preferences every 10 s for no benefit; a flip or a round
-    // number of confirmations is enough to survive process death.
+    private fun judgeWindow(from: Verdict, slopeMa: Double, meanRaw: Double): Verdict {
+        if (meanRaw == 0.0) return from
+        val slope = abs(slopeMa)
+        val asMicro = abs(meanRaw) / 1000.0
+        val asMilli = abs(meanRaw)
+        val tolerance = ln(SLOPE_MATCH_FACTOR)
+        val observedScale = when {
+            abs(ln(asMicro / slope)) <= tolerance -> Scale.MICRO
+            abs(ln(asMilli / slope)) <= tolerance -> Scale.MILLI
+            // Neither unit agrees with the counter: the counter or the reading is odd; no vote.
+            else -> return from
+        }
+        lastSlopePositive = slopeMa > 0
+        val (scale, evidence) = vote(from.scale, from.evidence, observedScale, CORROBORATED_WEIGHT)
+        val observedInvert = (meanRaw > 0) != (slopeMa > 0)
+        val (invert, signEvidence) = vote(from.invertSign, from.signEvidence, observedInvert, CORROBORATED_WEIGHT)
+        return from.copy(scale = scale, evidence = evidence, invertSign = invert, signEvidence = signEvidence)
+    }
+
+    private fun resetWindow(tMs: Long, counterUah: Long) {
+        windowStartMs = tMs
+        windowStartCounter = counterUah
+        windowLastMs = tMs
+        windowRawSum = 0.0
+        windowReadings = 0
+    }
+
+    /**
+     * Hysteresis counter: returns the (possibly flipped) value and its new evidence. A
+     * disagreeing vote spends up to [weight] of the existing evidence; the value only flips when
+     * a disagreeing vote finds the evidence already at zero.
+     */
+    private fun <T> vote(current: T, evidence: Int, observed: T, weight: Int = 1): Pair<T, Int> = when {
+        observed == current -> current to (evidence + weight).coerceAtMost(MAX_EVIDENCE)
+        evidence >= weight -> current to evidence - weight
+        evidence > 0 -> current to 0
+        else -> observed to weight
+    }
+
+    // Saving on every tick would write preferences every 10 s for no benefit; a flip or passing a
+    // round number of confirmations is enough to survive process death. Weighted votes move in
+    // steps larger than one, hence "crossed a multiple" rather than "landed on one".
     private fun worthSaving(before: Verdict, after: Verdict): Boolean =
         before.scale != after.scale ||
             before.invertSign != after.invertSign ||
-            (after.evidence != before.evidence && after.evidence % SAVE_EVERY == 0) ||
-            (after.signEvidence != before.signEvidence && after.signEvidence % SAVE_EVERY == 0)
+            after.evidence / SAVE_EVERY != before.evidence / SAVE_EVERY ||
+            after.signEvidence / SAVE_EVERY != before.signEvidence / SAVE_EVERY
 
     companion object {
         /** |raw| at or above this while charging must be µA (30 mA; 30 A if it were mA). */
@@ -156,10 +256,32 @@ class CurrentNormalizer(
         const val MILLI_MIN = 100L
         const val MILLI_MAX = 10_000L
 
-        /** Below this many mA the sign is noise (idle drift, heavy use nearly cancelling input). */
+        /** Below this many mA the discharge sign is noise (idle drift). */
         const val SIGN_MIN_MA = 20L
+
+        /** A CHARGING reading only argues for the sign when it is clearly charging. */
+        const val SIGN_MIN_CHARGING_MA = 300L
+
+        /** Above this level the charger tapers or holds, so magnitude says nothing about units. */
+        const val MAX_LEVEL_FOR_MAGNITUDE = 95f
+
+        /** From this much evidence on, only counter-corroborated votes can move a verdict. */
+        const val LOCK_EVIDENCE = 20
+
+        const val SLOPE_WINDOW_MS = 60_000L
+        const val SLOPE_WINDOW_MAX_MS = 15 * 60_000L
+
+        /** 5 mAh: well above the counter's step on the phones seen so far. */
+        const val SLOPE_MIN_DELTA_UAH = 5_000L
+
+        /** Units differ by 1000x, so a generous factor still cannot confuse them. */
+        const val SLOPE_MATCH_FACTOR = 3.0
+
+        const val CORROBORATED_WEIGHT = 25
 
         const val MAX_EVIDENCE = 100
         const val SAVE_EVERY = 10
+
+        private const val MS_PER_HOUR = 3_600_000.0
     }
 }

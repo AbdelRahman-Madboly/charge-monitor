@@ -213,4 +213,34 @@ class SessionAccumulatorTest {
         assertEquals(150_000f / 660_000, next.totals.screenOnFraction, 1e-6f)
         assertEquals(100.0 + 1000.0 * 60_000 / 3_600_000, next.totals.mah, 1e-9)
     }
+
+    @Test
+    fun integerStartLevelIsRefinedFromTheFirstDecimalReading() {
+        // 4000 mAh battery: 1 % = 40 000 µAh. Plugged at a true 41.6 %, reported as 41.
+        val acc = foldAll(
+            snap(0, level = 41f, counterUah = 1_664_000),
+            snap(10_000, level = 41f, counterUah = 1_670_000),
+            snap(20_000, level = 42.2f, counterUah = 1_688_000),
+        )
+        assertEquals(41.6f, acc.totals.startLevel, 0.02f)
+        assertEquals(0.6f, acc.totals.levelAdded, 0.02f)
+    }
+
+    @Test
+    fun refinedStartNeverContradictsTheReportedInteger() {
+        // A counter that says the start was 40.2 while the system said 41: clamp to 41.
+        val acc = foldAll(
+            snap(0, level = 41f, counterUah = 1_608_000),
+            snap(10_000, level = 42.2f, counterUah = 1_688_000),
+        )
+        assertEquals(41f, acc.totals.startLevel, 0.001f)
+    }
+
+    @Test
+    fun decimalStartOrMissingCounterIsLeftAlone() {
+        val decimal = foldAll(snap(0, level = 41.3f, counterUah = 1_652_000), snap(10_000, level = 42.2f, counterUah = 1_688_000))
+        assertEquals(41.3f, decimal.totals.startLevel, 0.001f)
+        val noCounter = foldAll(snap(0, level = 41f), snap(10_000, level = 42.2f))
+        assertEquals(41f, noCounter.totals.startLevel, 0.001f)
+    }
 }

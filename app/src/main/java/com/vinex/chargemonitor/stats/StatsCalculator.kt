@@ -2,6 +2,8 @@ package com.vinex.chargemonitor.stats
 
 import com.vinex.chargemonitor.battery.BatterySnapshot
 import com.vinex.chargemonitor.battery.ChargeStatus
+import com.vinex.chargemonitor.data.BankEvent
+import com.vinex.chargemonitor.data.BankEventKind
 import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
 
@@ -12,23 +14,39 @@ import com.vinex.chargemonitor.data.PowerSource
 object StatsCalculator {
 
     /**
-     * Energy a bank has delivered, expressed as mAh at the bank's nominal voltage.
+     * What the app can say about a power bank's capacity.
      *
-     * [estimatedMah] is **cumulative** over [sessionsUsed]: the spec formula sums energy across
-     * sessions and the app has no record of when a bank was refilled, so it cannot isolate one
-     * full drain. [ratioOfRated] therefore reads as "bank-fulls delivered so far" (2.4 = the bank
-     * has given 2.4 times its label). It equals the per-drain capacity ratio only when the
-     * sessions passed in make up exactly one drain from full to empty.
-     * [estimatedMah] is null when there is no qualifying session.
+     * Adding up every session's energy only gives a running total ("delivered so far"), which
+     * grows without limit. A capacity needs one drain from full to empty, and only the user
+     * knows when those happened, so they mark them as [BankEvent]s. A **cycle** runs from a
+     * [BankEventKind.RECHARGED] mark to the next [BankEventKind.EMPTY] mark; its sessions'
+     * energy is one estimate of the bank's usable capacity, and [cycleMah] is the median of the
+     * completed ones.
      */
     data class CapacityEstimate(
-        val estimatedMah: Double?,
+        /** Median usable capacity over [completedCycles], mAh at the bank's nominal voltage. */
+        val cycleMah: Double?,
         val ratedMah: Int?,
-        /** estimatedMah / ratedMah, null when either is unknown. */
+        /** cycleMah / ratedMah; null without a completed cycle or a rating. */
         val ratioOfRated: Double?,
-        val whIn: Double,
+        val completedCycles: Int,
+        /** Cycles that ended but were left out (open, unconfirmed or used-while-charging sessions). */
+        val skippedCycles: Int,
+        /** Energy into the phone over every counted session, and the same as mAh at nominal. */
+        val deliveredWh: Double,
+        val deliveredMah: Double,
+        /** Since the latest mark, when that mark is [BankEventKind.RECHARGED]; else null. */
+        val sinceRechargeWh: Double?,
+        val sinceRechargeMah: Double?,
         val sessionsUsed: Int,
-    )
+    ) {
+        /** deliveredMah as multiples of the label, e.g. 2.4 "bank-fulls". */
+        val deliveredBankFulls: Double? get() = ratedMah?.let { deliveredMah / it }
+
+        companion object {
+            val NONE = CapacityEstimate(null, null, null, 0, 0, 0.0, 0.0, null, null, 0)
+        }
+    }
 
     data class HealthEstimate(
         /** Median of recent qualifying per-session capacities, mAh. */
@@ -58,45 +76,76 @@ object StatsCalculator {
 
     /**
      * Sum of percentage points added / 100 over closed, non-mock sessions. Exact; the headline
-     * "full charges" figure. Includes used-while-charging sessions by design.
+     * "full charges" figure. Includes used-while-charging sessions by design. With
+     * [requireConfirmed] (a power bank's total) a session whose source was only guessed is left
+     * out, so an unanswered prompt on a wall charger cannot inflate a bank.
      */
-    fun fullChargeEquivalents(sessions: List<ChargeSession>): Double =
-        sessions.filter(::isCountable).sumOf { it.levelAdded.toDouble() } / 100.0
+    fun fullChargeEquivalents(sessions: List<ChargeSession>, requireConfirmed: Boolean = false): Double =
+        sessions.filter { isCountable(it) && (!requireConfirmed || it.sourceConfirmed) }
+            .sumOf { it.levelAdded.toDouble() } / 100.0
 
     /**
-     * `mAh ≈ Wh_into_battery / lossFactor / bank.nominalV × 1000` over the closed, non-mock
-     * sessions of [bank]. Used-while-charging sessions are skipped unless
-     * [includeUsedWhileCharging]; sessions of any other source are ignored, and a source that is
-     * not a power bank (charger, laptop, wireless) never gets an estimate.
+     * Capacity of [bank] from its closed, non-mock, confirmed sessions and the user's refill
+     * marks in [events] (other banks' marks are ignored).
+     *
+     * mAh for a set of sessions is `Wh_into_battery / lossFactor / bank.nominalV × 1000`. A
+     * cycle is only used when every session in it is closed and confirmed, and, unless
+     * [includeUsedWhileCharging], none was used while charging: dropping one session from a
+     * drain would understate it far more than the phone's own use does. A source that is not a
+     * power bank never gets an estimate.
      */
     fun bankCapacityEstimate(
         sessions: List<ChargeSession>,
         bank: PowerSource,
         lossFactor: Double,
         includeUsedWhileCharging: Boolean,
+        events: List<BankEvent> = emptyList(),
     ): CapacityEstimate {
         val rated = bank.ratedMah?.takeIf { it > 0 }
-        val used = if (bank.countsTowardBank) {
-            sessions.filter {
-                it.sourceId == bank.id && isCountable(it) && (includeUsedWhileCharging || !it.usedWhileCharging)
-            }
-        } else {
-            emptyList()
-        }
-        if (used.isEmpty()) {
-            return CapacityEstimate(null, rated, null, whIn = 0.0, sessionsUsed = 0)
-        }
-        val whIn = used.sumOf { it.whIn }
+        if (!bank.countsTowardBank) return CapacityEstimate.NONE.copy(ratedMah = rated)
         // A loss factor outside (0, 1] is a settings bug, not a physical bank; keep it sane.
         val loss = lossFactor.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(1.0) ?: 1.0
         val volts = bank.nominalV.takeIf { it.isFinite() && it > 0.0 } ?: DEFAULT_NOMINAL_V
-        val mah = whIn / loss / volts * 1000.0
+        fun mahOf(wh: Double) = wh / loss / volts * 1000.0
+
+        val own = sessions.filter { it.sourceId == bank.id && !it.mock }
+        val counted = own.filter { isCountable(it) && it.sourceConfirmed }
+        val deliveredWh = counted.sumOf { it.whIn }
+
+        val marks = events.filter { it.sourceId == bank.id }.sortedBy { it.tMs }
+        val cycles = mutableListOf<Double>()
+        var skipped = 0
+        var cycleStart: Long? = null
+        for (mark in marks) {
+            when (mark.kind) {
+                BankEventKind.RECHARGED -> cycleStart = mark.tMs
+                BankEventKind.EMPTY -> {
+                    val from = cycleStart ?: continue
+                    cycleStart = null
+                    val inCycle = own.filter { it.startMs in from until mark.tMs }
+                    val usable = inCycle.isNotEmpty() && inCycle.all {
+                        isCountable(it) && it.sourceConfirmed && (includeUsedWhileCharging || !it.usedWhileCharging)
+                    }
+                    if (usable) cycles += mahOf(inCycle.sumOf { it.whIn }) else skipped++
+                }
+            }
+        }
+
+        val sinceWh = marks.lastOrNull()?.takeIf { it.kind == BankEventKind.RECHARGED }?.let { mark ->
+            counted.filter { it.startMs >= mark.tMs }.sumOf { it.whIn }
+        }
+        val cycleMah = cycles.takeIf { it.isNotEmpty() }?.let(::median)
         return CapacityEstimate(
-            estimatedMah = mah,
+            cycleMah = cycleMah,
             ratedMah = rated,
-            ratioOfRated = rated?.let { mah / it },
-            whIn = whIn,
-            sessionsUsed = used.size,
+            ratioOfRated = cycleMah?.let { c -> rated?.let { c / it } },
+            completedCycles = cycles.size,
+            skippedCycles = skipped,
+            deliveredWh = deliveredWh,
+            deliveredMah = mahOf(deliveredWh),
+            sinceRechargeWh = sinceWh,
+            sinceRechargeMah = sinceWh?.let(::mahOf),
+            sessionsUsed = counted.size,
         )
     }
 
@@ -109,6 +158,8 @@ object StatsCalculator {
         val design = designMah?.takeIf { it > 0 }
         val capacities = sessions
             .filter {
+                // The source does not matter here (this is about the phone), so unconfirmed
+                // sessions are fine.
                 isCountable(it) && !it.usedWhileCharging &&
                     it.levelAdded >= HEALTH_MIN_DELTA_PCT && it.mahIn > 0.0
             }

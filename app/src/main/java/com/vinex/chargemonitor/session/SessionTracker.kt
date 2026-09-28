@@ -43,8 +43,11 @@ class RepositorySessionStore(private val repository: Repository) : SessionStore 
  *   process death loses at most that much;
  * - unplug starts the reconnect grace; a replug with the same plug type inside it continues the
  *   session, otherwise the session is closed at its last plugged reading;
- * - after a restart, an open row is resumed if the phone is still on the same plug and the row
- *   was written recently, and closed as it stands otherwise.
+ * - after a restart, an open row is resumed only if it can be the same physical charge: same
+ *   plug, no unplug recorded (or a replug still inside the reconnect grace), written recently,
+ *   and a charge counter that did not fall meanwhile. Otherwise it is closed as it stands;
+ * - a source the plug type decides (USB, wireless) is confirmed at once; an AC session's source
+ *   is a guess until the user picks one, see [ChargeSession.sourceConfirmed].
  */
 class SessionTracker(
     private val store: SessionStore,
@@ -84,6 +87,7 @@ class SessionTracker(
 
     val sessionId: Long? get() = row?.id
     val hasOpenSession: Boolean get() = row != null
+    val sourceConfirmed: Boolean get() = row?.sourceConfirmed == true
     val totals: SessionTotals? get() = if (row != null && !acc.isEmpty) acc.totals else null
 
     /**
@@ -106,6 +110,9 @@ class SessionTracker(
                 if (acc.isWithinReconnectGrace(snapshot.tMs) && open.plug == snapshot.plug.name) {
                     unpluggedAtMs = null
                     events += Event.Reconnected(open.id)
+                    // Clears the stored unplug mark now, so a restart does not mistake the
+                    // continued charge for one that ended at the unplug.
+                    checkpoint()
                 } else {
                     close(events)
                 }
@@ -135,7 +142,7 @@ class SessionTracker(
     suspend fun applySource(sessionId: Long, sourceId: Long) {
         val open = row ?: return
         if (open.id != sessionId) return
-        row = open.copy(sourceId = sourceId)
+        row = open.copy(sourceId = sourceId, sourceConfirmed = true)
         source = store.source(sourceId)
         // Written now, from the tracker's own copy, so an in-flight checkpoint that read the row
         // just before the reassignment cannot put the old source back.
@@ -149,22 +156,33 @@ class SessionTracker(
 
     private suspend fun restore(snapshot: BatterySnapshot, isMock: Boolean, events: MutableList<Event>) {
         val open = store.openSession() ?: return
-        val resumable = snapshot.isPlugged &&
-            open.plug == snapshot.plug.name &&
-            open.mock == isMock &&
-            snapshot.tMs - open.updatedMs in 0..RESUME_MAX_GAP_MS
-        if (!resumable) {
+        val gapMs = snapshot.tMs - open.updatedMs
+        val samePlug = snapshot.isPlugged && open.plug == snapshot.plug.name
+        val mode = when {
+            open.mock != isMock -> null
+            open.unpluggedAtMs != null -> when {
+                // The unplug was recorded; only the loose-connector grace can still join them.
+                gapMs !in 0..SessionAccumulator.RECONNECT_GRACE_MS -> null
+                samePlug -> RestoreMode.RECONNECTED
+                !snapshot.isPlugged -> RestoreMode.STILL_UNPLUGGED
+                else -> null
+            }
+            samePlug && gapMs in 0..RESUME_MAX_GAP_MS && counterContinuous(open, snapshot) -> RestoreMode.CONTINUED
+            else -> null
+        }
+        if (mode == null) {
             // Totals are as good as the last checkpoint; the level at that time is the best end.
             store.checkpoint(
-                open.copy(endMs = open.updatedMs, endLevel = open.endLevel ?: open.startLevel),
+                open.copy(endMs = open.updatedMs, endLevel = open.endLevel ?: open.startLevel, unpluggedAtMs = null),
                 emptyList(),
             )
             return
         }
-        // The interval since the last checkpoint is unknown, so the current reading becomes the
-        // new integration reference rather than being folded against a guessed predecessor.
+
+        val reference = open.lastCounterUah ?: snapshot.chargeCounterUah
+        val startCounter = reference?.let { ref -> open.counterMahIn?.let { ref - (it * 1000).toLong() } ?: ref }
         val integratedMs = (open.updatedMs - open.startMs).coerceAtLeast(0L)
-        acc = SessionAccumulator(
+        var base = SessionAccumulator(
             startMs = open.startMs,
             last = snapshot,
             mah = open.mahIn,
@@ -175,19 +193,52 @@ class SessionTracker(
             screenOnMs = (open.screenOnFraction * integratedMs).toLong(),
             reachedFull = open.reachedFull,
             startLevel = open.startLevel,
-            endLevel = snapshot.levelPct,
+            endLevel = if (snapshot.isPlugged) snapshot.levelPct else open.endLevel ?: open.startLevel,
             sampleCount = open.sampleCount,
+            lastPluggedMs = if (snapshot.isPlugged) snapshot.tMs else open.updatedMs,
+            firstCounterUah = startCounter,
+            lastCounterUah = if (snapshot.isPlugged) snapshot.chargeCounterUah ?: reference else reference,
+            startRefined = true,
         )
+        if (mode == RestoreMode.CONTINUED) base = base.bridgeDeadInterval(open, snapshot)
+        // The current reading becomes the new integration reference rather than being folded
+        // against a guessed predecessor; the dead interval, if any, was bridged above.
+        acc = base
         row = open
         source = store.source(open.sourceId)
         persistedSamples = open.sampleCount
         lastSampleMs = open.updatedMs
         lastCheckpointMs = snapshot.tMs
-        lastCounterUah = snapshot.chargeCounterUah
-        startCounterUah = snapshot.chargeCounterUah?.let { now ->
-            open.counterMahIn?.let { now - (it * 1000).toLong() } ?: now
-        }
+        unpluggedAtMs = if (mode == RestoreMode.STILL_UNPLUGGED) open.unpluggedAtMs else null
+        lastCounterUah = base.lastCounterUah
+        startCounterUah = startCounter
         events += Event.Resumed(open)
+        if (mode == RestoreMode.RECONNECTED) {
+            events += Event.Reconnected(open.id)
+            checkpoint()
+        }
+    }
+
+    private enum class RestoreMode { CONTINUED, RECONNECTED, STILL_UNPLUGGED }
+
+    /** A counter that fell noticeably while the process was dead means the phone ran on battery. */
+    private fun counterContinuous(open: ChargeSession, snapshot: BatterySnapshot): Boolean {
+        val before = open.lastCounterUah ?: return true
+        val now = snapshot.chargeCounterUah ?: return true
+        return now - before >= -COUNTER_DROP_TOLERANCE_UAH
+    }
+
+    /** Charge taken while the process was dead, from the counter; Wh at the current voltage. */
+    private fun SessionAccumulator.bridgeDeadInterval(open: ChargeSession, snapshot: BatterySnapshot): SessionAccumulator {
+        val before = open.lastCounterUah ?: return this
+        val now = snapshot.chargeCounterUah ?: return this
+        val gapMs = (snapshot.tMs - open.updatedMs).coerceAtLeast(0L)
+        val gapMah = (now - before) / 1000.0
+        return copy(
+            mah = mah + gapMah,
+            wh = wh + gapMah * snapshot.voltageMv / 1_000_000.0,
+            integratedMs = integratedMs + gapMs,
+        )
     }
 
     private suspend fun open(snapshot: BatterySnapshot, isMock: Boolean, events: MutableList<Event>) {
@@ -204,6 +255,7 @@ class SessionTracker(
             startLevel = snapshot.levelPct,
             endLevel = snapshot.levelPct,
             mock = isMock,
+            sourceConfirmed = !decision.prompt,
         )
         val id = store.startSession(draft)
         row = draft.copy(id = id)
@@ -253,6 +305,10 @@ class SessionTracker(
         val t = acc.totals
         val updated = stored.copy(
             sourceId = sourceId,
+            // Confirmation only ever goes one way: from the prompt, the picker or History.
+            sourceConfirmed = stored.sourceConfirmed || open.sourceConfirmed || sourceOverride != null,
+            unpluggedAtMs = if (closeAtMs != null) null else unpluggedAtMs,
+            lastCounterUah = lastCounterUah,
             endMs = closeAtMs,
             updatedMs = if (acc.isEmpty) open.updatedMs else acc.totals.lastMs,
             endLevel = if (acc.isEmpty) stored.endLevel else t.endLevel,
@@ -313,5 +369,8 @@ class SessionTracker(
          * very likely unplugged and replugged while the process was dead.
          */
         const val RESUME_MAX_GAP_MS = 10 * 60_000L
+
+        /** Heavy use while plugged can drain a little; more than this was a real unplug. */
+        const val COUNTER_DROP_TOLERANCE_UAH = 50_000L
     }
 }

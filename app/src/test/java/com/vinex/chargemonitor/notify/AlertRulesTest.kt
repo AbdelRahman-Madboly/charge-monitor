@@ -5,6 +5,7 @@ import com.vinex.chargemonitor.battery.ChargeStatus
 import com.vinex.chargemonitor.battery.PlugType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.vinex.chargemonitor.data.ChargeSession
 import org.junit.Test
 
 class AlertRulesTest {
@@ -69,5 +70,34 @@ class AlertRulesTest {
     fun disabledTogglesSilenceAlerts() {
         val off = config.copy(targetEnabled = false, tempEnabled = false, stoppedEnabled = false)
         assertTrue(run(snap(79f), snap(81f, 50f, ChargeStatus.FULL), cfg = off).isEmpty())
+    }
+
+    @Test
+    fun resumedSessionDoesNotRepeatAlertsItAlreadyRaised() {
+        val session = ChargeSession(
+            sourceId = 1, plug = "AC", startMs = 0, startLevel = 20f, endLevel = 100f,
+            maxTempC = 43f, reachedFull = true,
+        )
+        var state = AlertRules.resumedState(session, config)
+        val all = mutableListOf<AlertKind>()
+        for (s in listOf(snap(100f, temp = 43f, status = ChargeStatus.FULL), snap(100f, temp = 44f, status = ChargeStatus.FULL))) {
+            val (next, alerts) = AlertRules.evaluate(state, s, config)
+            state = next
+            all += alerts
+        }
+        assertTrue(all.isEmpty())
+    }
+
+    @Test
+    fun resumedSessionBelowTargetCanStillAlert() {
+        val session = ChargeSession(sourceId = 1, plug = "AC", startMs = 0, startLevel = 20f, endLevel = 70f, maxTempC = 30f)
+        var state = AlertRules.resumedState(session, config)
+        val all = mutableListOf<AlertKind>()
+        for (s in listOf(snap(79.9f), snap(80.1f))) {
+            val (next, alerts) = AlertRules.evaluate(state, s, config)
+            state = next
+            all += alerts
+        }
+        assertEquals(listOf(AlertKind.TARGET), all)
     }
 }

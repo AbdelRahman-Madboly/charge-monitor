@@ -11,6 +11,7 @@ class Repository(private val db: AppDatabase) {
     private val sources = db.sourceDao()
     private val sessions = db.sessionDao()
     private val samples = db.sampleDao()
+    private val bankEvents = db.bankEventDao()
 
     // Sources
     fun observeSources(): Flow<List<PowerSource>> = sources.observeAll()
@@ -41,6 +42,11 @@ class Repository(private val db: AppDatabase) {
     suspend fun deleteSession(id: Long) = sessions.delete(id)
     suspend fun recentBankIds(limit: Int = 2): List<Long> = sessions.recentBankIds(limit)
     suspend fun sessionsForExport(): List<ChargeSession> = sessions.getAllForExport()
+
+    // Bank events
+    fun observeBankEvents(): Flow<List<BankEvent>> = bankEvents.observeAll()
+    suspend fun addBankEvent(event: BankEvent): Long = bankEvents.insert(event.copy(id = 0))
+    suspend fun deleteBankEvent(id: Long) = bankEvents.delete(id)
 
     // Samples
     fun observeSamples(sessionId: Long): Flow<List<Sample>> = samples.observeForSession(sessionId)

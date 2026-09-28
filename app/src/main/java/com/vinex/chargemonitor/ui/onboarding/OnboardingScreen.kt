@@ -168,6 +168,14 @@ private fun BatteryStep() {
         Done("Background use allowed")
     } else {
         Button(onClick = { SystemSettings.requestIgnoreBatteryOptimizations(context) }) { Text("Allow background use") }
+        // Not a hard block (the system dialog is missing on some builds), but the one step that
+        // decides whether charges get recorded at all, so the cost of skipping it is spelled out.
+        Text(
+            "Strongly recommended. Without it, Android may refuse to restart monitoring after stopping it, " +
+                "and charges go unrecorded until you open the app again.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
     if (SystemSettings.isSamsung) {
         Text(

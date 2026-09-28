@@ -18,8 +18,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +37,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vinex.chargemonitor.data.BankEvent
+import com.vinex.chargemonitor.data.BankEventKind
 import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.SourceKind
@@ -96,7 +100,16 @@ fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = view
         }
 
         ui.cards.forEach { card ->
-            if (card.source.kind == SourceKind.POWER_BANK) BankCard(card, ui.lossFactor) else SourceCardView(card)
+            if (card.source.kind == SourceKind.POWER_BANK) {
+                BankCard(
+                    card,
+                    ui.lossFactor,
+                    onMark = { kind -> vm.markBank(card.source.id, kind) },
+                    onUndo = { id -> vm.undoMark(id) },
+                )
+            } else {
+                SourceCardView(card)
+            }
         }
 
         Charts(ui.chartSessions, ui.sources, ui.includeUsed)
@@ -136,7 +149,7 @@ private fun CardHeader(source: PowerSource, subtitle: String?) {
 }
 
 @Composable
-private fun BankCard(card: SourceCard, lossFactor: Float) {
+private fun BankCard(card: SourceCard, lossFactor: Float, onMark: (BankEventKind) -> Unit, onUndo: (Long) -> Unit) {
     Panel {
         CardHeader(card.source, card.source.ratedMah?.let { "${Format.mah(it.toDouble())} mAh rated" })
         Row(verticalAlignment = Alignment.Bottom) {
@@ -150,16 +163,31 @@ private fun BankCard(card: SourceCard, lossFactor: Float) {
             )
         }
         MiniStats(card)
-        CapacityBar(card.capacity, lossFactor)
+        CapacitySection(card.capacity, lossFactor)
+        RefillMarks(card.lastMark, onMark, onUndo)
         if (card.usedExcluded > 0) {
-            Text(
-                "${card.usedExcluded} session${if (card.usedExcluded == 1) "" else "s"} used while charging left out of the estimate.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Note("${plural(card.usedExcluded, "session")} used while charging left out of the capacity estimate.")
+        }
+        if (card.unconfirmedCount > 0) {
+            Note(
+                "${plural(card.unconfirmedCount, "session")} (+${Format.fullCharges(card.unconfirmedFullCharges)} full charges) " +
+                    "not counted: the source prompt was not answered. Confirm them in History.",
+                color = MaterialTheme.colorScheme.error,
             )
         }
     }
 }
+
+@Composable
+private fun Note(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
+    Text(text, style = MaterialTheme.typography.bodyMedium, color = color, modifier = modifier)
+}
+
+private fun plural(n: Int, word: String) = "$n $word${if (n == 1) "" else "s"}"
 
 @Composable
 private fun SourceCardView(card: SourceCard) {
@@ -199,17 +227,22 @@ private fun Mini(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The capacity bar only appears once a full drain has been marked; before that the honest
+ * figure is energy delivered so far, which keeps growing and so never gets a bar.
+ */
 @Composable
-private fun CapacityBar(estimate: StatsCalculator.CapacityEstimate?, lossFactor: Float) {
-    val capacity = estimate ?: StatsCalculator.CapacityEstimate(null, null, null, 0.0, 0)
-    val est = capacity.estimatedMah
+private fun CapacitySection(estimate: StatsCalculator.CapacityEstimate?, lossFactor: Float) {
+    val capacity = estimate ?: StatsCalculator.CapacityEstimate.NONE
+    val est = capacity.cycleMah
+    val rated = capacity.ratedMah
     Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text("Real capacity", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
             Text(
                 when {
-                    est == null -> "not enough data"
-                    capacity.ratedMah != null -> "est. ${Format.mah(est)} / ${Format.mah(capacity.ratedMah.toDouble())} mAh"
+                    est == null -> "needs one full drain"
+                    rated != null -> "est. ${Format.mah(est)} / ${Format.mah(rated.toDouble())} mAh"
                     else -> "est. ${Format.mah(est)} mAh"
                 },
                 style = Readout.small,
@@ -229,16 +262,45 @@ private fun CapacityBar(estimate: StatsCalculator.CapacityEstimate?, lossFactor:
                 Text("${Format.percent(ratio)} %", style = Readout.small.copy(fontWeight = FontWeight.SemiBold))
             }
         }
-        Text(
-            if (est == null) {
-                "Appears after the first charge from this bank. Leave the screen off while charging for the best estimate."
-            } else {
-                "From ${capacity.sessionsUsed} session${if (capacity.sessionsUsed == 1) "" else "s"}, " +
-                    "${Format.wh(capacity.whIn)} Wh in, loss factor ${Format.f(lossFactor.toDouble(), 2)}."
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        val loss = "loss factor ${Format.f(lossFactor.toDouble(), 2)}"
+        if (est != null) {
+            Note(
+                "Median of ${plural(capacity.completedCycles, "full drain")}, $loss." +
+                    if (capacity.skippedCycles > 0) " ${plural(capacity.skippedCycles, "drain")} left out." else "",
+            )
+        }
+        capacity.sinceRechargeWh?.let { wh ->
+            val share = rated?.let { r -> capacity.sinceRechargeMah?.let { " (${Format.percent(it / r)} % of the label)" } } ?: ""
+            Note("Since the last recharge: ${Format.wh(wh)} Wh$share.")
+        }
+        if (capacity.sessionsUsed > 0) {
+            val fulls = capacity.deliveredBankFulls?.let { " ≈ ${Format.f(it, 2)} bank-fulls" } ?: ""
+            Note("Delivered so far: ${Format.wh(capacity.deliveredWh)} Wh$fulls (est., $loss).")
+        }
+        if (est == null) {
+            Note(
+                "Tap Recharged when this bank is full and Ran empty when it dies; the energy in between " +
+                    "is its real capacity. Screen off while charging gives the best estimate.",
+            )
+        }
+    }
+}
+
+@Composable
+private fun RefillMarks(lastMark: BankEvent?, onMark: (BankEventKind) -> Unit, onUndo: (Long) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(Space.s), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = { onMark(BankEventKind.RECHARGED) }, modifier = Modifier.weight(1f)) { Text("Recharged") }
+        OutlinedButton(onClick = { onMark(BankEventKind.EMPTY) }, modifier = Modifier.weight(1f)) { Text("Ran empty") }
+    }
+    if (lastMark != null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val what = if (lastMark.kind == BankEventKind.RECHARGED) "Recharged" else "Ran empty"
+            Note(
+                "Last marked: $what, ${Format.shortDay(lastMark.tMs)} ${Format.clock(lastMark.tMs)}",
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { onUndo(lastMark.id) }) { Text("Undo") }
+        }
     }
 }
 

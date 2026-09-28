@@ -94,6 +94,7 @@ interface ChargeSessionDao {
                COALESCE(AVG(avgW), 0) AS avgW
         FROM charge_session
         WHERE endMs IS NOT NULL AND mock = 0 AND (:includeUsedWhileCharging OR usedWhileCharging = 0)
+          AND (sourceConfirmed = 1 OR sourceId IN (SELECT id FROM power_source WHERE kind != 'POWER_BANK'))
         GROUP BY sourceId
         """,
     )
@@ -112,7 +113,8 @@ interface ChargeSessionDao {
     )
     suspend fun recentBankIds(limit: Int): List<Long>
 
-    @Query("UPDATE charge_session SET sourceId = :sourceId WHERE id = :id")
+    /** Every explicit source choice is also a confirmation. */
+    @Query("UPDATE charge_session SET sourceId = :sourceId, sourceConfirmed = 1 WHERE id = :id")
     suspend fun setSource(id: Long, sourceId: Long)
 
     @Query("DELETE FROM charge_session WHERE id = :id")
@@ -135,4 +137,16 @@ interface SampleDao {
 
     @Query("SELECT COUNT(*) FROM sample WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: Long): Int
+}
+
+@Dao
+interface BankEventDao {
+    @Insert
+    suspend fun insert(event: BankEvent): Long
+
+    @Query("SELECT * FROM bank_event ORDER BY tMs")
+    fun observeAll(): Flow<List<BankEvent>>
+
+    @Query("DELETE FROM bank_event WHERE id = :id")
+    suspend fun delete(id: Long)
 }

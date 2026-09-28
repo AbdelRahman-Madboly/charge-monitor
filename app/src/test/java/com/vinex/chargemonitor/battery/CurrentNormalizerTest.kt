@@ -65,18 +65,98 @@ class CurrentNormalizerTest {
     }
 
     @Test
-    fun establishedVerdictSurvivesAFewOddReadings() {
+    fun youngVerdictSurvivesAFewOddReadings() {
+        val n = CurrentNormalizer()
+        repeat(10) { n.normalize(1_800_000, charging, PlugType.AC) }
+        assertEquals(10, n.verdict.evidence)
+        // Heavy use while plugged: 5 mA net in µA looks like "5000 mA".
+        repeat(5) { n.normalize(5_000, charging, PlugType.AC) }
+        assertEquals(Scale.MICRO, n.verdict.scale)
+        assertEquals(5, n.verdict.evidence)
+    }
+
+    @Test
+    fun settledVerdictIgnoresMagnitudeAndStatusVotes() {
         val n = CurrentNormalizer()
         repeat(20) { n.normalize(1_800_000, charging, PlugType.AC) }
-        assertEquals(20, n.verdict.evidence)
-        // Heavy use while plugged: 5 mA net in µA looks like "5000 mA" and nets negative briefly.
-        repeat(5) { n.normalize(5_000, charging, PlugType.AC) }
-        repeat(5) { n.normalize(-60_000, charging, PlugType.AC) }
+        repeat(50) { n.normalize(5_000, charging, PlugType.AC) }
+        repeat(50) { n.normalize(-600_000, charging, PlugType.AC) }
+        assertEquals(Verdict(Scale.MICRO, invertSign = false, evidence = 20, signEvidence = 20), n.verdict)
+    }
+
+    @Test
+    fun longLowCurrentChargingHoldDoesNotFlipAnEstablishedMicroampVerdict() {
+        // The review's failure: an overnight hold at 80 % reporting ~3 mA in µA, status CHARGING.
+        val n = CurrentNormalizer(initial = Verdict(Scale.MICRO, invertSign = false, evidence = 100, signEvidence = 100))
+        var counter = 3_600_000L
+        for (i in 0 until 300) {
+            val t = i * 10_000L
+            counter += 8 // 3 mA for 10 s is about 8 µAh
+            assertEquals(3.0, n.normalize(3_000, charging, PlugType.AC, 80f, counter, t), 1e-9)
+        }
         assertEquals(Scale.MICRO, n.verdict.scale)
+        assertEquals(100, n.verdict.evidence)
+    }
+
+    @Test
+    fun lowCurrentHoldOnAFreshInstallStillWaitsOnTheCounter() {
+        // Magnitude alone would flip a fresh install at 3 000 raw; the counter slope, once a
+        // real charge moves it, turns the verdict back within a few windows.
+        val n = CurrentNormalizer()
+        var counter = 2_000_000L
+        var t = 0L
+        repeat(10) { n.normalize(3_000, charging, PlugType.AC, 60f, counter, t); t += 10_000 }
+        assertEquals(Scale.MILLI, n.verdict.scale)
+        repeat(60) {
+            counter += 5_555 // 2 A for 10 s
+            n.normalize(2_000_000, charging, PlugType.AC, 61f, counter, t)
+            t += 10_000
+        }
+        assertEquals(Scale.MICRO, n.verdict.scale)
+        assertEquals(2000.0, n.normalize(2_000_000, charging, PlugType.AC, 62f, counter + 5_555, t), 1e-9)
+    }
+
+    @Test
+    fun counterSlopeOverturnsAWrongSettledScale() {
+        // A µA phone that somehow settled on mA: each minute of counter data is a heavy vote.
+        val n = CurrentNormalizer(initial = Verdict(Scale.MILLI, invertSign = false, evidence = 100, signEvidence = 100))
+        var counter = 1_000_000L
+        for (i in 0..60) {
+            counter += 2_777 // 1 A for 10 s
+            n.normalize(1_000_000, charging, PlugType.AC, 50f, counter, i * 10_000L)
+        }
+        assertEquals(Scale.MICRO, n.verdict.scale)
+    }
+
+    @Test
+    fun netDischargeWhileStatusSaysChargingKeepsTheSign() {
+        // Weak source plus heavy use: CHARGING, but the counter falls and the current is negative.
+        val n = CurrentNormalizer(initial = Verdict(Scale.MICRO, invertSign = false, evidence = 100, signEvidence = 30))
+        var counter = 3_000_000L
+        for (i in 0 until 400) {
+            counter -= 1_388 // 500 mA out for 10 s
+            assertEquals(-500.0, n.normalize(-500_000, charging, PlugType.AC, 50f, counter, i * 10_000L), 1e-9)
+        }
         assertFalse(n.verdict.invertSign)
-        // The negative readings were still clearly µA, so scale evidence recovered; sign paid.
-        assertEquals(20, n.verdict.evidence)
-        assertEquals(15, n.verdict.signEvidence)
+    }
+
+    @Test
+    fun counterSlopeLearnsAnInvertedSign() {
+        val n = CurrentNormalizer(initial = Verdict(Scale.MICRO, invertSign = false, evidence = 100, signEvidence = 100))
+        var counter = 1_000_000L
+        for (i in 0..60) {
+            counter += 4_166 // 1.5 A into the battery, reported negative
+            n.normalize(-1_500_000, charging, PlugType.AC, 50f, counter, i * 10_000L)
+        }
+        assertTrue(n.verdict.invertSign)
+        assertEquals(1500.0, n.normalize(-1_500_000, charging, PlugType.AC, 50f, counter + 4_166, 610_000L), 1e-9)
+    }
+
+    @Test
+    fun readingsNearFullTeachNothingByMagnitude() {
+        val n = CurrentNormalizer()
+        n.normalize(3_000, charging, PlugType.AC, levelPct = 99f)
+        assertEquals(Verdict.DEFAULT, n.verdict)
     }
 
     @Test

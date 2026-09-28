@@ -61,12 +61,13 @@ class BatteryReader(
         val counter = batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
             ?.takeIf { it > 0 }?.toLong()
 
+        val now = clock()
         return BatterySnapshot(
-            tMs = clock(),
+            tMs = now,
             voltageMv = sticky?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0,
             currentUaRaw = raw,
-            currentMa = normalizer.normalize(raw, status, plug),
-            levelPct = levelInterpolator.levelPct(integerPct, counter),
+            currentMa = normalizer.normalize(raw, status, plug, integerPct, counter, now),
+            levelPct = levelInterpolator.levelPct(integerPct, counter, now, plug != PlugType.NONE),
             chargeCounterUah = counter,
             tempC = (sticky?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10f,
             plug = plug,
@@ -85,16 +86,26 @@ class BatteryReader(
  * interpolates from there with the counter, so the decimal always agrees with the integer the
  * system reports. Until a step has been seen, or whenever the result would disagree with the
  * integer level, it returns the integer level unchanged.
+ *
+ * A step is only trusted when the previous read was recent and on the same side of the plug:
+ * the service stops reading while unplugged, so "50 at unplug, 49 at replug hours later" is not
+ * a crossing that just happened.
  */
 class LevelInterpolator {
     private var lastLevel: Int? = null
     private var anchorLevel: Int? = null
     private var anchorCounterUah: Long? = null
+    private var lastReadMs: Long? = null
+    private var lastPlugged: Boolean? = null
 
-    fun levelPct(integerPct: Float, counterUah: Long?): Float {
+    fun levelPct(integerPct: Float, counterUah: Long?, tMs: Long? = null, plugged: Boolean? = null): Float {
         val level = integerPct.toInt()
+        val stale = (tMs != null && lastReadMs?.let { tMs - it !in 0..STALE_READ_MS } == true) ||
+            (plugged != null && lastPlugged != null && plugged != lastPlugged)
+        if (tMs != null) lastReadMs = tMs
+        if (plugged != null) lastPlugged = plugged
         // Non-integral input means an unusual EXTRA_SCALE; nothing sensible to add.
-        if (integerPct != level.toFloat() || counterUah == null || counterUah <= 0 || level < MIN_LEVEL) {
+        if (stale || integerPct != level.toFloat() || counterUah == null || counterUah <= 0 || level < MIN_LEVEL) {
             reset(level)
             return integerPct
         }
@@ -141,5 +152,11 @@ class LevelInterpolator {
         const val PLAUSIBLE_SLACK = 0.5
 
         const val MAX_FRACTION = 0.9
+
+        /**
+         * A gap longer than this between reads makes a one-step change useless as an anchor.
+         * Generous because the service also reads on every level change while plugged.
+         */
+        const val STALE_READ_MS = 10 * 60_000L
     }
 }

@@ -57,4 +57,27 @@ class LevelInterpolatorTest {
         // Counter recalibrated by the gauge (big step down): result would be far below 42.
         assertEquals(42f, li.levelPct(42f, counter(39.0)), 0f)
     }
+
+    @Test
+    fun aStepAcrossAPlugChangeIsNotAnAnchor() {
+        // Unplugged at 50, replugged at 49 hours later: not a crossing that just happened.
+        val li = LevelInterpolator()
+        li.levelPct(50f, counter(50.3), tMs = 0, plugged = false)
+        assertEquals(49f, li.levelPct(49f, counter(49.9), tMs = 60_000, plugged = true), 0f)
+    }
+
+    @Test
+    fun aStepAfterALongGapIsNotAnAnchor() {
+        val li = LevelInterpolator()
+        li.levelPct(50f, counter(50.3), tMs = 0, plugged = false)
+        assertEquals(49f, li.levelPct(49f, counter(49.9), tMs = 5 * 3_600_000L, plugged = false), 0f)
+    }
+
+    @Test
+    fun aPromptStepStillAnchors() {
+        val li = LevelInterpolator()
+        li.levelPct(41f, counter(41.9), tMs = 0, plugged = true)
+        li.levelPct(42f, counter(42.0), tMs = 10_000, plugged = true)
+        assertEquals(42.5f, li.levelPct(42f, counter(42.5), tMs = 20_000, plugged = true), 0.051f)
+    }
 }

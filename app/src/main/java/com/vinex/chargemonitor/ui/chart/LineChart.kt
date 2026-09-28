@@ -158,7 +158,7 @@ fun LineChart(
             val x = xMin + (xMax - xMin) * i / xTicks
             val m = measurer.measure(xLabel(x), labelStyle)
             val cx = xPx(x)
-            val lx = (cx - m.size.width / 2).coerceIn(padL, padL + plotW - m.size.width)
+            val lx = (cx - m.size.width / 2).coerceIn(padL, (padL + plotW - m.size.width).coerceAtLeast(padL))
             if (lx > lastRight + 6.dp.toPx()) {
                 drawText(m, topLeft = Offset(lx, padT + plotH + 4.dp.toPx()))
                 lastRight = lx + m.size.width
@@ -204,7 +204,7 @@ fun LineChart(
         }
 
         val sx = scrubX ?: return@Canvas
-        val cx = sx.coerceIn(padL, padL + plotW)
+        val cx = sx.coerceIn(padL, (padL + plotW).coerceAtLeast(padL))
         val xAt = xMin + ((cx - padL) / plotW * (xMax - xMin)).toLong()
         drawLine(scrubColor, Offset(cx, padT), Offset(cx, padT + plotH), strokeWidth = 1.dp.toPx())
         val lines = mutableListOf(xLabel(xAt))

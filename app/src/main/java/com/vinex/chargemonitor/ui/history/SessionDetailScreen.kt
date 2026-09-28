@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -95,7 +96,23 @@ fun SessionDetailScreen(sessionId: Long, onBack: () -> Unit, modifier: Modifier 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
                 ColorDot(ui.source?.let { Color(it.colorArgb) } ?: MaterialTheme.colorScheme.outline)
                 Text(ui.source?.name ?: "Unknown source", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                SessionFlags(s)
+                SessionFlags(s, ui.source)
+            }
+            val guessed = ui.source
+            if (guessed != null && needsConfirmation(s, guessed)) {
+                Panel {
+                    Text(
+                        "The \"Connected to?\" prompt was not answered, so ${guessed.name} is a guess and this " +
+                            "session is not counted toward it yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                        Button(onClick = { vm.changeSource(context, guessed) }, modifier = Modifier.weight(1f)) {
+                            Text("Confirm ${guessed.name}")
+                        }
+                        OutlinedButton(onClick = { picking = true }, modifier = Modifier.weight(1f)) { Text("Pick another") }
+                    }
+                }
             }
 
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Space.s)) {

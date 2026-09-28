@@ -219,4 +219,109 @@ class SessionTrackerTest {
         assertEquals(10L, store.sessions[id]!!.sourceId)
         assertEquals("Bank A", tracker.source?.name)
     }
+
+    // ---- source confirmation ----
+
+    @Test
+    fun acSessionIsUnconfirmedUntilTheUserPicks() = runTest {
+        settings.lastNonLaptopSourceId.set(10L)
+        val tracker = SessionTracker(store, settings)
+        val opened = tracker.onSnapshot(snap(0), false, tenS).single() as SessionTracker.Event.Opened
+        // Provisionally the last bank, as the spec says, but only a guess.
+        assertEquals(10L, opened.session.sourceId)
+        assertFalse(opened.session.sourceConfirmed)
+        tracker.onSnapshot(snap(60_000), false, tenS)
+        assertFalse(store.sessions.values.single().sourceConfirmed)
+
+        tracker.applySource(opened.session.id, 10L)
+        assertTrue(store.sessions.values.single().sourceConfirmed)
+        tracker.onSnapshot(snap(120_000), false, tenS)
+        assertTrue(store.sessions.values.single().sourceConfirmed)
+    }
+
+    @Test
+    fun usbAndWirelessAreConfirmedByThePlugType() = runTest {
+        val tracker = SessionTracker(store, settings)
+        val usb = tracker.onSnapshot(snap(0, PlugType.USB), false, tenS).single() as SessionTracker.Event.Opened
+        assertTrue(usb.session.sourceConfirmed)
+    }
+
+    // ---- restart after process death ----
+
+    private suspend fun chargeThenUnplug(unplugAt: Long) {
+        SessionTracker(store, settings).apply {
+            onSnapshot(snap(0, level = 30f), false, tenS)
+            onSnapshot(snap(60_000, level = 31f), false, tenS)
+            onSnapshot(snap(unplugAt, PlugType.NONE, level = 31f), false, tenS)
+        }
+    }
+
+    @Test
+    fun unplugIsStoredSoARestartDoesNotMergeTheNextCharge() = runTest {
+        // Unplug from bank A, process dies inside the grace, bank B (also AC) plugged in 5 min later.
+        chargeThenUnplug(unplugAt = 65_000)
+        assertEquals(65_000L, store.sessions.values.single().unpluggedAtMs)
+
+        val restarted = SessionTracker(store, settings)
+        val events = restarted.onSnapshot(snap(365_000, level = 31f), false, tenS)
+
+        assertTrue(events.single() is SessionTracker.Event.Opened)
+        assertEquals(2, store.sessions.size)
+        val old = store.sessions.getValue(1L)
+        assertEquals(60_000L, old.endMs)
+        assertNull(old.unpluggedAtMs)
+    }
+
+    @Test
+    fun restartInsideTheGraceAfterAnUnplugReconnects() = runTest {
+        chargeThenUnplug(unplugAt = 65_000)
+        val restarted = SessionTracker(store, settings)
+        val events = restarted.onSnapshot(snap(80_000, level = 31f), false, tenS)
+
+        assertTrue(events[0] is SessionTracker.Event.Resumed)
+        assertTrue(events[1] is SessionTracker.Event.Reconnected)
+        assertEquals(1, store.sessions.size)
+        assertNull(store.sessions.values.single().unpluggedAtMs)
+    }
+
+    @Test
+    fun restartWhileStillUnpluggedKeepsTheGraceRunning() = runTest {
+        chargeThenUnplug(unplugAt = 65_000)
+        val restarted = SessionTracker(store, settings)
+        assertTrue(restarted.onSnapshot(snap(75_000, PlugType.NONE, level = 31f), false, tenS).single() is SessionTracker.Event.Resumed)
+        assertTrue(restarted.hasOpenSession)
+        val closed = restarted.onSnapshot(snap(95_000, PlugType.NONE, level = 31f), false, tenS).single()
+        assertEquals(60_000L, (closed as SessionTracker.Event.Closed).session.endMs)
+    }
+
+    @Test
+    fun restartBridgesTheDeadIntervalWithTheChargeCounter() = runTest {
+        SessionTracker(store, settings).apply {
+            onSnapshot(snap(0, level = 30f), false, tenS)
+            onSnapshot(snap(60_000, level = 31f), false, tenS)
+        }
+        val beforeMah = store.sessions.values.single().mahIn
+        val restarted = SessionTracker(store, settings)
+        restarted.onSnapshot(snap(300_000, level = 40f), false, tenS)
+
+        // 9 % at 45 mAh per percent charged while the process was dead.
+        val bridged = 9 * 45.0
+        assertEquals(beforeMah + bridged, restarted.totals!!.mah, 1e-6)
+        // The counter cross-check covers the whole session, dead interval included.
+        assertEquals(bridged + 45.0, restarted.totals!!.counterMah!!, 1e-6)
+        assertEquals(10f, restarted.totals!!.levelAdded, 0.01f)
+    }
+
+    @Test
+    fun restartWithAFallenChargeCounterClosesTheOldSession() = runTest {
+        SessionTracker(store, settings).apply {
+            onSnapshot(snap(0, level = 30f), false, tenS)
+            onSnapshot(snap(60_000, level = 31f), false, tenS)
+        }
+        val restarted = SessionTracker(store, settings)
+        val events = restarted.onSnapshot(snap(300_000, level = 20f), false, tenS)
+
+        assertTrue(events.single() is SessionTracker.Event.Opened)
+        assertEquals(60_000L, store.sessions.getValue(1L).endMs)
+    }
 }

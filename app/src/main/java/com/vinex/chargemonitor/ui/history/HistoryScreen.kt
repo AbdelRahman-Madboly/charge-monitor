@@ -29,6 +29,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
+import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.components.ColorDot
 import com.vinex.chargemonitor.ui.components.Space
@@ -131,7 +133,13 @@ fun HistoryScreen(
                 ui.groups.forEach { group ->
                     stickyHeader(key = "d-${group.day}") { DayHeader(group, today) }
                     items(group.sessions, key = { it.id }) { s ->
-                        SessionRow(s, ui.sources[s.sourceId]) { onOpenSession(s.id) }
+                        val source = ui.sources[s.sourceId]
+                        SessionRow(
+                            s,
+                            source,
+                            onClick = { onOpenSession(s.id) },
+                            onConfirm = { source?.let { vm.confirm(context, s.id, it) } },
+                        )
                         HorizontalDivider(Modifier.padding(start = 40.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
                     }
                 }
@@ -162,7 +170,7 @@ private fun DayHeader(group: DayGroup, today: LocalDate) {
 }
 
 @Composable
-private fun SessionRow(s: ChargeSession, source: PowerSource?, onClick: () -> Unit) {
+private fun SessionRow(s: ChargeSession, source: PowerSource?, onClick: () -> Unit, onConfirm: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -178,7 +186,7 @@ private fun SessionRow(s: ChargeSession, source: PowerSource?, onClick: () -> Un
                     "${Format.levelInt(s.startLevel)} → ${if (s.isOpen) "…" else Format.levelInt(s.endLevel)} %",
                     style = Readout.tile.copy(fontSize = Readout.tile.fontSize * 0.8f),
                 )
-                SessionFlags(s)
+                SessionFlags(s, source)
             }
             Text(
                 "${source?.name ?: "Unknown"} · ${Format.clock(s.startMs)} · ${Format.duration((s.endMs ?: s.updatedMs) - s.startMs)}",
@@ -189,14 +197,24 @@ private fun SessionRow(s: ChargeSession, source: PowerSource?, onClick: () -> Un
         Column(horizontalAlignment = Alignment.End) {
             Text("${Format.mah(s.mahIn)} mAh", style = Readout.small)
             Text("${Format.wh(s.whIn)} Wh", style = Readout.small, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (needsConfirmation(s, source)) {
+                TextButton(onClick = onConfirm, contentPadding = PaddingValues(horizontal = Space.s)) { Text("Confirm") }
+            }
         }
     }
 }
 
+/**
+ * A guessed source only matters when it is a power bank: that is the one total it would distort.
+ */
+fun needsConfirmation(s: ChargeSession, source: PowerSource?): Boolean =
+    !s.sourceConfirmed && source?.kind == SourceKind.POWER_BANK
+
 @Composable
-fun SessionFlags(s: ChargeSession) {
+fun SessionFlags(s: ChargeSession, source: PowerSource? = null) {
     Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
         if (s.isOpen) Tag("charging", color = MaterialTheme.colorScheme.primary)
+        if (needsConfirmation(s, source)) Tag("unconfirmed", color = MaterialTheme.colorScheme.error)
         if (s.reachedFull) Tag("full", color = MaterialTheme.colorScheme.primary)
         if (s.usedWhileCharging) Tag("used", color = MaterialTheme.colorScheme.error)
         if (s.avgW >= 10.0) Tag("fast")

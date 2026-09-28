@@ -49,6 +49,10 @@ data class SessionTotals(
  *   interval to its earlier snapshot. Counter-bridged gaps are excluded: nobody knows what the
  *   screen did then.
  * - [reachedFull] latches once any plugged snapshot reports [ChargeStatus.FULL].
+ * - A start level with no decimal (the level interpolator has no anchor at plug-in) is really
+ *   somewhere in [n, n + 1), so taking n would add about half a percent to every session. Once
+ *   a later reading has a decimal, the start is worked back from it with the charge counter and
+ *   kept within [n, n + 0.9] so it never contradicts the integer the system reported.
  * - Non-positive time steps (clock set backwards, duplicate reading) only move the reference.
  */
 data class SessionAccumulator(
@@ -75,6 +79,8 @@ data class SessionAccumulator(
     val lastPluggedMs: Long = last?.takeIf { it.isPlugged }?.tMs ?: 0L,
     val firstCounterUah: Long? = null,
     val lastCounterUah: Long? = null,
+    /** False while [startLevel] is a bare integer that a later reading may still refine. */
+    val startRefined: Boolean = true,
 ) {
     val isEmpty: Boolean get() = last == null
 
@@ -96,6 +102,7 @@ data class SessionAccumulator(
                 lastPluggedMs = snapshot.tMs,
                 firstCounterUah = snapshot.chargeCounterUah,
                 lastCounterUah = snapshot.chargeCounterUah,
+                startRefined = !snapshot.levelPct.isWhole() || snapshot.chargeCounterUah == null,
             )
         }
 
@@ -110,6 +117,7 @@ data class SessionAccumulator(
             firstCounterUah = firstCounterUah ?: snapshot.chargeCounterUah,
             lastCounterUah = snapshot.chargeCounterUah ?: lastCounterUah,
         )
+        if (!startRefined) next = next.refineStart(snapshot)
 
         val dtMs = snapshot.tMs - previous.tMs
         if (!previous.isPlugged || dtMs <= 0) return next
@@ -137,6 +145,22 @@ data class SessionAccumulator(
             }
         }
         return next
+    }
+
+    private fun refineStart(snapshot: BatterySnapshot): SessionAccumulator {
+        val first = firstCounterUah ?: return copy(startRefined = true)
+        val counter = snapshot.chargeCounterUah ?: return this
+        if (snapshot.levelPct.isWhole() || snapshot.levelPct < MIN_REFINE_LEVEL) return this
+        val fullUah = counter * 100.0 / snapshot.levelPct
+        val estimate = snapshot.levelPct - (counter - first) * 100.0 / fullUah
+        // Far outside the reported integer means the counter jumped (gauge recalibration); the
+        // integer is then the safer start.
+        val refined = if (estimate in startLevel - 0.5..startLevel + 1.5) {
+            estimate.coerceIn(startLevel.toDouble(), startLevel + MAX_START_FRACTION).toFloat()
+        } else {
+            startLevel
+        }
+        return copy(startLevel = refined, startRefined = true)
     }
 
     /** True when a replug at [nowMs] should continue this session rather than start a new one. */
@@ -173,6 +197,10 @@ data class SessionAccumulator(
         const val MAX_INTEGRATION_GAP_MS = 5 * 60_000L
 
         private const val MS_PER_HOUR = 3_600_000.0
+        private const val MIN_REFINE_LEVEL = 5f
+        private const val MAX_START_FRACTION = 0.9
+
+        private fun Float.isWhole(): Boolean = this == kotlin.math.floor(this)
 
         val EMPTY = SessionAccumulator()
     }

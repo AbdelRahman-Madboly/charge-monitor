@@ -2,6 +2,7 @@ package com.vinex.chargemonitor.notify
 
 import com.vinex.chargemonitor.battery.BatterySnapshot
 import com.vinex.chargemonitor.battery.ChargeStatus
+import com.vinex.chargemonitor.data.ChargeSession
 
 enum class AlertKind { TARGET, TEMPERATURE, FULL, STOPPED }
 
@@ -40,6 +41,16 @@ object AlertRules {
     }
 
     const val STOPPED_STREAK = 2
+
+    /**
+     * State for a session picked up again after a process restart, so alerts it already raised
+     * (full, over temperature, target passed) are not raised a second time.
+     */
+    fun resumedState(session: ChargeSession, config: Config): State = State(
+        targetSent = (session.endLevel ?: session.startLevel) >= config.targetLevel,
+        tempSent = session.maxTempC?.let { it >= config.tempThresholdC } ?: false,
+        stoppedSent = session.reachedFull,
+    )
 
     fun evaluate(state: State, snapshot: BatterySnapshot, config: Config): Pair<State, List<AlertKind>> {
         if (!snapshot.isPlugged) return state.copy(notChargingStreak = 0) to emptyList()
