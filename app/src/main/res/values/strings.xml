@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Charge Monitor</string>
+    <string name="fgs_special_use_subtype">Logs phone charging sessions (voltage, current, energy per charger or power bank) while the phone is plugged in</string>
+
+    <string name="tab_live">Live</string>
+    <string name="tab_dashboard">Dashboard</string>
+    <string name="tab_history">History</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="channel_status">Monitoring status</string>
+    <string name="channel_status_desc">Persistent notification that keeps charge logging running</string>
+    <string name="channel_prompt">Charging source</string>
+    <string name="channel_prompt_desc">Asks which charger or power bank was just connected</string>
+    <string name="channel_alerts">Charging alerts</string>
+    <string name="channel_alerts_desc">Target level, temperature and charge-stopped alerts</string>
+    <string name="notif_monitoring">Monitoring charging</string>
+
+    <string name="widget_label">Charge Monitor</string>
+    <string name="widget_placeholder_w">-- W</string>
+    <string name="widget_placeholder_pct">--%</string>
+    <string name="widget_placeholder_source">Not charging</string>
+    <string name="widget_placeholder_bank">-- bank charges</string>
+    <string name="widget_description">Live charging power, level and power bank totals</string>
+</resources>
