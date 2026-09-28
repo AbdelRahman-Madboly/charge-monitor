@@ -14,7 +14,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -26,6 +30,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
+import com.vinex.chargemonitor.LiveBus
 import com.vinex.chargemonitor.ServiceLocator
 import com.vinex.chargemonitor.ui.history.SessionDetailScreen
 import com.vinex.chargemonitor.ui.onboarding.OnboardingScreen
@@ -45,8 +50,13 @@ enum class Tab(val route: String, @StringRes val label: Int, val icon: ImageVect
 
 private const val SESSION_ROUTE = "session/{id}"
 
+/**
+ * [pickSourceFor] is a session whose source the user asked to choose from a notification: the
+ * recording session opens the Live picker, an older one opens its detail screen, which has the
+ * same control. [onPickSourceHandled] is called once the request has been routed.
+ */
 @Composable
-fun AppScaffold() {
+fun AppScaffold(pickSourceFor: Long? = null, onPickSourceHandled: () -> Unit = {}) {
     val settings = ServiceLocator.settings
     val onboarded by settings.onboardingDone.flow.collectAsState()
     if (!onboarded) {
@@ -58,6 +68,22 @@ fun AppScaffold() {
     val current = backStack?.destination
 
     val onTab = current?.route != SESSION_ROUTE
+    var livePickerRequested by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(pickSourceFor) {
+        val id = pickSourceFor ?: return@LaunchedEffect
+        if (LiveBus.state.value.sessionId == id) {
+            nav.navigate(Tab.LIVE.route) {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+            livePickerRequested = true
+        } else {
+            nav.navigate("session/$id")
+        }
+        onPickSourceHandled()
+    }
 
     Scaffold(
         bottomBar = {
@@ -81,7 +107,12 @@ fun AppScaffold() {
         },
     ) { padding ->
         NavHost(nav, startDestination = Tab.LIVE.route, modifier = Modifier.padding(padding)) {
-            composable(Tab.LIVE.route) { LiveScreen() }
+            composable(Tab.LIVE.route) {
+                LiveScreen(
+                    openPicker = livePickerRequested,
+                    onPickerOpened = { livePickerRequested = false },
+                )
+            }
             composable(Tab.DASHBOARD.route) { DashboardScreen() }
             composable(Tab.HISTORY.route) { HistoryScreen(onOpenSession = { nav.navigate("session/$it") }) }
             composable(SESSION_ROUTE, arguments = listOf(navArgument("id") { type = NavType.LongType })) { entry ->

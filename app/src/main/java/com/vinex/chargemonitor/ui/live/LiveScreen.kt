@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -53,7 +54,12 @@ import com.vinex.chargemonitor.ui.theme.Readout
 import com.vinex.chargemonitor.ui.theme.SeriesColors
 
 @Composable
-fun LiveScreen(modifier: Modifier = Modifier, vm: LiveViewModel = viewModel()) {
+fun LiveScreen(
+    modifier: Modifier = Modifier,
+    openPicker: Boolean = false,
+    onPickerOpened: () -> Unit = {},
+    vm: LiveViewModel = viewModel(),
+) {
     // Tells the service to sample at the fast cadence only while this screen is actually resumed.
     LifecycleResumeEffect(Unit) {
         LiveBus.setLiveVisible(true)
@@ -62,6 +68,12 @@ fun LiveScreen(modifier: Modifier = Modifier, vm: LiveViewModel = viewModel()) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var picking by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(openPicker) {
+        if (openPicker) {
+            picking = true
+            onPickerOpened()
+        }
+    }
     val live = ui.live
     val snap = live.snapshot
     val active = live.sessionId != null && snap != null && snap.isPlugged

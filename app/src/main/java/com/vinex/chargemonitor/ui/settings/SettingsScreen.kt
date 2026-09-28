@@ -46,6 +46,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vinex.chargemonitor.BuildConfig
+import com.vinex.chargemonitor.ServiceLocator
 import com.vinex.chargemonitor.battery.CurrentUnit
 import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.ui.Format
@@ -165,8 +166,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
             val unit by s.currentUnit.flow.collectAsStateWithLifecycle()
             Text("Current unit", style = MaterialTheme.typography.bodyLarge)
             Text(
-                "Auto works on most phones. Change it only if the current reads about 1000× too high or low. " +
-                    "Takes effect after the app restarts.",
+                "Auto works on most phones. Change it only if the current reads about 1000× too high or low.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -180,7 +180,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
                         CurrentUnit.MILLI -> "mA"
                     }
                 },
-                onSelect = { s.currentUnit.set(it) },
+                onSelect = {
+                    s.currentUnit.set(it)
+                    // The normaliser is long-lived; tell it directly so the next reading uses the new scale.
+                    ServiceLocator.currentNormalizer.override = it
+                },
             )
         }
 
