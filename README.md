@@ -7,9 +7,28 @@ the label, and what current, voltage and wattage each charger delivers.
 The design and its reasoning are in
 [`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
 
-Status: scaffold. The data layer, manifest, icon and navigation are in place; measurement,
-session tracking, statistics and the real screens are being built on top of the contracts in
-`battery/`, `session/`, `source/` and `stats/`.
+Status: prototype, running on a Galaxy A54 (Android 16). Live, Dashboard, History and Settings
+work end to end; 133 JVM tests pass. Not yet checked on a device: the home-screen widget, CSV
+export, and Samsung's fast-charge flag.
+
+| Live | Dashboard | History |
+|---|---|---|
+| ![Live](docs/screenshots/02-live-charging.png) | ![Dashboard](docs/screenshots/03-dashboard.png) | ![History](docs/screenshots/04-history.png) |
+
+Screenshots are from the emulator with mock data.
+
+## How it measures
+
+- **Full charges** per power bank are the sum of % added across its sessions, divided by 100.
+  Partial charges add up: 15 to 80 % plus 5 to 35 % is 0.95.
+- **Charge and energy** come from the fuel gauge's charge counter once it has moved 30 mAh, and
+  from integrating current for shorter sessions.
+- **Real bank capacity** is the energy delivered between tapping *Recharged* and *Ran empty* on
+  the bank's card, divided by a conversion-loss factor (0.85 by default).
+- **Laptops** are recognised by the USB data connection and never count toward a power bank. A
+  laptop port that fast-charges reports as AC, so plug type alone cannot tell.
+- **Mains or power bank?** The phone cannot tell, so plugging into AC raises a notification that
+  asks. Unconfirmed sessions stay out of bank totals.
 
 ## Build
 

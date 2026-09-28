@@ -7,3 +7,21 @@ local.properties
 .kotlin/
 __pycache__/
 .pytest_cache/
+
+# Secrets and environment
+.env
+.env.*
+*.pem
+*.key
+*.jks
+*.keystore
+credentials*
+secrets/
+
+# Real charge data exported from a phone never belongs here
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.csv
+*.xlsx
