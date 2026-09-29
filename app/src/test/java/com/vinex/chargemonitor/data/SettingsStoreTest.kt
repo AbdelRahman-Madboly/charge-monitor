@@ -52,4 +52,33 @@ class SettingsStoreTest {
         s.rememberBank(4)
         assertEquals(listOf(4L, 5L), s.lastBankIds.value)
     }
+
+    @Test
+    fun rememberSourceTeachesThePromptByKind() {
+        val s = SettingsStore(FakeSharedPreferences())
+        val bank = PowerSource(id = 4, name = "ADATA", kind = SourceKind.POWER_BANK, colorArgb = 0)
+        val charger = PowerSource(id = 9, name = "Anker 30W", kind = SourceKind.CHARGER, colorArgb = 0, ratedW = 30.0)
+        val laptop = PowerSource(id = BuiltInSources.LAPTOP_ID, name = "Laptop", kind = SourceKind.LAPTOP, colorArgb = 0, builtIn = true)
+
+        s.rememberSource(bank)
+        assertEquals(listOf(4L), s.lastBankIds.value)
+        assertEquals(4L, s.lastNonLaptopSourceId.value)
+        assertNull(s.lastChargerId.value)
+
+        s.rememberSource(charger)
+        assertEquals(listOf(4L), s.lastBankIds.value)
+        assertEquals(9L, s.lastChargerId.value)
+        assertEquals(9L, s.lastNonLaptopSourceId.value)
+
+        s.rememberSource(laptop)
+        assertEquals(9L, s.lastNonLaptopSourceId.value)
+    }
+
+    @Test
+    fun themeModeDefaultsToSystemAndPersists() {
+        val prefs = FakeSharedPreferences()
+        assertEquals(ThemeMode.SYSTEM, SettingsStore(prefs).themeMode.value)
+        SettingsStore(prefs).themeMode.set(ThemeMode.LIGHT)
+        assertEquals(ThemeMode.LIGHT, SettingsStore(prefs).themeMode.value)
+    }
 }

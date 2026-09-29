@@ -29,7 +29,7 @@ import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.ui.Format
 
 /**
- * Bottom sheet listing active power banks first, then the built-ins. Used from the Live source
+ * Bottom sheet listing active power banks first, then named chargers, then the built-ins. Used from the Live source
  * chip and from session detail, so both paths offer exactly the same choices.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -42,6 +42,7 @@ fun SourcePickerSheet(
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val banks = sources.filter { it.kind == SourceKind.POWER_BANK && !it.archived }
+    val chargers = sources.filter { it.kind == SourceKind.CHARGER && !it.builtIn && !it.archived }
     val builtIns = sources.filter { it.builtIn }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
         Column(Modifier.navigationBarsPadding().padding(bottom = Space.l)) {
@@ -59,6 +60,10 @@ fun SourcePickerSheet(
                 )
             }
             banks.forEach { SourceRow(it, it.id == selectedId) { onPick(it) } }
+            if (chargers.isNotEmpty()) {
+                HorizontalDivider(Modifier.padding(vertical = Space.xs))
+                chargers.forEach { SourceRow(it, it.id == selectedId) { onPick(it) } }
+            }
             HorizontalDivider(Modifier.padding(vertical = Space.xs))
             builtIns.forEach { SourceRow(it, it.id == selectedId) { onPick(it) } }
         }
@@ -80,9 +85,9 @@ private fun SourceRow(source: PowerSource, selected: Boolean, onClick: () -> Uni
             Text(source.name, style = MaterialTheme.typography.bodyLarge)
             val sub = when (source.kind) {
                 SourceKind.POWER_BANK -> source.ratedMah?.let { "${Format.mah(it.toDouble())} mAh rated" } ?: "Power bank"
+                SourceKind.CHARGER -> source.ratedW?.let { "Wall charger · ${Format.watts(it)} W rated" } ?: "Wall charger"
                 SourceKind.LAPTOP -> "Not counted toward any bank"
                 SourceKind.WIRELESS -> "Not counted toward any bank"
-                SourceKind.CHARGER -> "Wall charger"
             }
             Text(sub, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

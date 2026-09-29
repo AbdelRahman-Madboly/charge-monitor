@@ -5,7 +5,6 @@ import android.content.Intent
 import com.vinex.chargemonitor.LiveBus
 import com.vinex.chargemonitor.ServiceLocator
 import com.vinex.chargemonitor.data.PowerSource
-import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.notify.NotificationActionReceiver
 
 /** User actions on sessions that more than one screen offers. */
@@ -28,12 +27,8 @@ object SessionActions {
             context.sendBroadcast(intent)
             return
         }
-        val settings = ServiceLocator.settings
         ServiceLocator.repository.setSessionSource(sessionId, source.id)
         // Same memory rules as the notification path, so both kinds of correction teach the prompt.
-        if (source.kind == SourceKind.POWER_BANK) settings.rememberBank(source.id)
-        if (source.kind == SourceKind.POWER_BANK || source.kind == SourceKind.CHARGER) {
-            settings.lastNonLaptopSourceId.set(source.id)
-        }
+        ServiceLocator.settings.rememberSource(source)
     }
 }

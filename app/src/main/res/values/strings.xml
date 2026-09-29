@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Charge Monitor</string>
+    <string name="app_name">Bank Tester</string>
     <string name="fgs_special_use_subtype">Logs phone charging sessions (voltage, current, energy per charger or power bank) while the phone is plugged in</string>
 
     <string name="tab_live">Live</string>
@@ -16,7 +16,7 @@
     <string name="channel_alerts_desc">Target level, temperature and charge-stopped alerts</string>
     <string name="notif_monitoring">Monitoring charging</string>
 
-    <string name="widget_label">Charge Monitor</string>
+    <string name="widget_label">Bank Tester</string>
     <string name="widget_placeholder_w">-- W</string>
     <string name="widget_placeholder_pct">--%</string>
     <string name="widget_placeholder_source">Not charging</string>

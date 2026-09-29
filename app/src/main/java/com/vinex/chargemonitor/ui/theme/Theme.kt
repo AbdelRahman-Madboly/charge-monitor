@@ -27,12 +27,16 @@ private val LightColors = lightColorScheme(
     secondary = Color(0xFF55606A),
     secondaryContainer = Color(0xFFD6EBCC),
     onSecondaryContainer = Color(0xFF10230A),
-    surfaceContainer = Color(0xFFECEEF0),
-    background = Color(0xFFF6F7F8),
-    surface = Color(0xFFF6F7F8),
+    surfaceContainer = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFFFFFFF),
+    background = Color(0xFFF1F3F5),
+    onBackground = Color(0xFF15191C),
+    surface = Color(0xFFF1F3F5),
+    onSurface = Color(0xFF15191C),
     surfaceVariant = Color(0xFFE4E7EA),
-    onSurfaceVariant = Color(0xFF454C53),
+    onSurfaceVariant = Color(0xFF4A525A),
     outline = Color(0xFF8A939B),
+    outlineVariant = Color(0xFFDDE2E6),
     error = Color(0xFFC62828),
 )
 
@@ -44,12 +48,16 @@ private val DarkColors = darkColorScheme(
     secondary = Color(0xFFA8B0B8),
     secondaryContainer = Color(0xFF2A3A24),
     onSecondaryContainer = Color(0xFFD6EBCC),
-    surfaceContainer = Color(0xFF181B1E),
-    background = Color(0xFF101214),
-    surface = Color(0xFF101214),
+    surfaceContainer = Color(0xFF16191C),
+    surfaceContainerLow = Color(0xFF1A1E22),
+    background = Color(0xFF0E1012),
+    onBackground = Color(0xFFE6E9EC),
+    surface = Color(0xFF0E1012),
+    onSurface = Color(0xFFE6E9EC),
     surfaceVariant = Color(0xFF1E2226),
-    onSurfaceVariant = Color(0xFFB9C0C6),
+    onSurfaceVariant = Color(0xFFB4BCC3),
     outline = Color(0xFF5C646B),
+    outlineVariant = Color(0xFF272C31),
     error = Color(0xFFEF5350),
 )
 
@@ -100,7 +108,11 @@ object SeriesColors {
         @Composable get() = if (isDark) Color(0xFFB39DDB) else Color(0xFF7154B0)
 }
 
-/** Palette offered for new power banks; distinct from each other and from the built-in colours. */
+/**
+ * Palette offered for new power banks and chargers; distinct from each other and from the
+ * built-in colours. Ordered so that neighbours differ in hue, since new sources take the first
+ * unused entry and two sources added together should never look alike on a chart.
+ */
 val BankPalette: List<Int> = listOf(
-    0xFFE57373, 0xFFFFB74D, 0xFFFFD54F, 0xFF4DB6AC, 0xFF4FC3F7, 0xFF7986CB, 0xFFF06292, 0xFFA1887F,
+    0xFFE57373, 0xFF4FC3F7, 0xFFFFB74D, 0xFF7986CB, 0xFF4DB6AC, 0xFFF06292, 0xFFFFD54F, 0xFFA1887F,
 ).map { it.toInt() }

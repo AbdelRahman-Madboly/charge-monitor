@@ -7,9 +7,9 @@ import androidx.room.PrimaryKey
 enum class SourceKind { POWER_BANK, CHARGER, LAPTOP, WIRELESS }
 
 /**
- * Something the phone charges from. Power banks are user-defined; Charger, Laptop (USB) and
- * Wireless are seeded on database creation with the fixed ids in [BuiltInSources] and are
- * never deleted.
+ * Something the phone charges from. Power banks and named wall chargers are user-defined;
+ * Charger, Laptop (USB) and Wireless are seeded on database creation with the fixed ids in
+ * [BuiltInSources] and are never deleted.
  */
 @Entity(tableName = "power_source", indices = [Index("kind")])
 data class PowerSource(
@@ -23,7 +23,15 @@ data class PowerSource(
     val colorArgb: Int,
     val archived: Boolean = false,
     val builtIn: Boolean = false,
+    /** A wall charger's rated output, W, from its label; null for banks and built-ins. */
+    val ratedW: Double? = null,
 ) {
+    /** Label energy, Wh: the one figure comparable across banks of different cell voltages. */
+    val ratedWh: Double?
+        get() = ratedMah?.takeIf { it > 0 }?.let { mah ->
+            nominalV.takeIf { it.isFinite() && it > 0.0 }?.let { mah * it / 1000.0 }
+        }
+
     /** Only power banks accumulate toward bank totals; laptop and wireless sessions never do. */
     val countsTowardBank: Boolean get() = kind == SourceKind.POWER_BANK
 }

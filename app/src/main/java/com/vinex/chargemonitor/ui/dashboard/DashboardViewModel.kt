@@ -36,6 +36,10 @@ data class SourceCard(
     val unconfirmedFullCharges: Double = 0.0,
     /** The bank's most recent refill mark, for the "last marked" line and undo. */
     val lastMark: BankEvent? = null,
+    /** Full phone charges the label promises per full bank; null without rating or phone size. */
+    val labelPhoneCharges: Double? = null,
+    /** Only for wall chargers. */
+    val charger: StatsCalculator.ChargerStats? = null,
 )
 
 data class DashboardUi(
@@ -102,8 +106,8 @@ class DashboardViewModel(
 
         val shown = sources.filter { s ->
             if (filter != null) s.id == filter
-            else bySource.containsKey(s.id) || (s.kind == SourceKind.POWER_BANK && !s.archived)
-        }.sortedWith(compareBy<PowerSource> { it.kind != SourceKind.POWER_BANK }.thenBy { it.builtIn }.thenBy { it.name.lowercase() })
+            else bySource.containsKey(s.id) || (!s.builtIn && !s.archived)
+        }.sortedWith(compareBy<PowerSource> { it.kind.ordinal }.thenBy { it.builtIn }.thenBy { it.name.lowercase() })
 
         val cards = shown.map { s ->
             val isBank = s.kind == SourceKind.POWER_BANK
@@ -127,6 +131,16 @@ class DashboardViewModel(
                 unconfirmedCount = unconfirmed.size,
                 unconfirmedFullCharges = StatsCalculator.fullChargeEquivalents(unconfirmed),
                 lastMark = if (isBank) events.lastOrNull { it.sourceId == s.id } else null,
+                charger = if (s.kind == SourceKind.CHARGER) {
+                    StatsCalculator.chargerStats(own, s.ratedW, includeUsed)
+                } else {
+                    null
+                },
+                labelPhoneCharges = if (isBank) {
+                    StatsCalculator.labelPhoneCharges(s, design.takeIf { it > 0 }, loss.toDouble())
+                } else {
+                    null
+                },
             )
         }
 

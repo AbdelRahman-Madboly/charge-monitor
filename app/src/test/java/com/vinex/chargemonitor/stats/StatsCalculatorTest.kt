@@ -129,6 +129,87 @@ class StatsCalculatorTest {
     }
 
     @Test
+    fun phoneChargesPerDrainIsTheMedianOverCompletedCycles() {
+        val events = listOf(
+            mark(0, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY),
+            mark(20 * hour, BankEventKind.RECHARGED), mark(30 * hour, BankEventKind.EMPTY),
+            mark(40 * hour, BankEventKind.RECHARGED), mark(50 * hour, BankEventKind.EMPTY),
+            mark(60 * hour, BankEventKind.RECHARGED), mark(70 * hour, BankEventKind.EMPTY),
+        )
+        val sessions = listOf(
+            session(10f, 60f, whIn = 10.0, startMs = hour), session(20f, 90f, whIn = 14.0, startMs = 5 * hour), // 1.2
+            session(10f, 90f, whIn = 16.0, startMs = 21 * hour), // 0.8
+            session(0f, 100f, whIn = 20.0, startMs = 41 * hour), session(50f, 100f, whIn = 10.0, startMs = 45 * hour), // 1.5
+            session(0f, 100f, whIn = 20.0, startMs = 61 * hour, used = true), // skipped: used while charging
+        )
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false, events)
+        assertEquals(3, est.completedCycles)
+        assertEquals(1, est.skippedCycles)
+        assertEquals(1.2, est.cyclePhoneCharges!!, 1e-6)
+    }
+
+    @Test
+    fun noCompletedCycleMeansNoPhoneChargesPerDrain() {
+        val sessions = listOf(session(10f, 60f, whIn = 10.0))
+        assertNull(StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false).cyclePhoneCharges)
+    }
+
+    @Test
+    fun labelPhoneChargesFromRatedEnergyLossAndPhoneSize() {
+        // 20,000 mAh at 3.7 V is 74 Wh; 85 % of it into a 5,000 mAh (19.35 Wh) phone.
+        val expected = 74.0 * 0.85 / (5_000 * StatsCalculator.PHONE_NOMINAL_V / 1000.0)
+        assertEquals(expected, StatsCalculator.labelPhoneCharges(bank, 5_000, 0.85)!!, 1e-9)
+        // A pack rated at its own 11.1 V compares on energy, not on mAh.
+        val pack = bank.copy(ratedMah = 17_492, nominalV = 11.1)
+        assertEquals(17_492 * 11.1 / 1000.0, pack.ratedWh!!, 1e-9)
+    }
+
+    @Test
+    fun labelPhoneChargesNeedsARatingAPhoneSizeAndASaneLoss() {
+        assertNull(StatsCalculator.labelPhoneCharges(bank.copy(ratedMah = null), 5_000, 0.85))
+        assertNull(StatsCalculator.labelPhoneCharges(bank, null, 0.85))
+        assertNull(StatsCalculator.labelPhoneCharges(bank, 0, 0.85))
+        assertNull(StatsCalculator.labelPhoneCharges(bank, 5_000, 0.0))
+        assertNull(StatsCalculator.labelPhoneCharges(bank.copy(nominalV = 0.0), 5_000, 0.85))
+    }
+
+    // ---- chargers ----
+
+    private fun chargerSession(from: Float, to: Float, hours: Double, peakW: Double, used: Boolean = false, full: Boolean = false) =
+        ChargeSession(
+            sourceId = 12, plug = "AC", startMs = 0, endMs = (hours * hour).toLong(), startLevel = from, endLevel = to,
+            peakW = peakW, usedWhileCharging = used, reachedFull = full, sourceConfirmed = true,
+        )
+
+    @Test
+    fun chargerStatsTakePeakFromAllAndSpeedFromAdmittedSessions() {
+        val sessions = listOf(
+            chargerSession(20f, 80f, hours = 1.0, peakW = 21.5),
+            chargerSession(50f, 100f, hours = 1.5, peakW = 18.0, full = true),
+            chargerSession(10f, 30f, hours = 1.0, peakW = 23.0, used = true), // screen on: peak only
+        )
+        val stats = StatsCalculator.chargerStats(sessions, ratedW = 30.0, includeUsedWhileCharging = false)
+        assertEquals(23.0, stats.peakW!!, 1e-9)
+        assertEquals(23.0 / 30.0, stats.peakOfRated!!, 1e-9)
+        assertEquals((60.0 + 50.0) / 2.5, stats.pctPerHour!!, 1e-9)
+        assertEquals(1, stats.fullCount)
+
+        val all = StatsCalculator.chargerStats(sessions, ratedW = 30.0, includeUsedWhileCharging = true)
+        assertEquals((60.0 + 50.0 + 20.0) / 3.5, all.pctPerHour!!, 1e-9)
+    }
+
+    @Test
+    fun chargerStatsWithoutDataOrRating() {
+        val empty = StatsCalculator.chargerStats(emptyList(), ratedW = 30.0, includeUsedWhileCharging = false)
+        assertNull(empty.peakW)
+        assertNull(empty.peakOfRated)
+        assertNull(empty.pctPerHour)
+        val unrated = StatsCalculator.chargerStats(listOf(chargerSession(20f, 80f, 1.0, 20.0)), null, false)
+        assertEquals(20.0, unrated.peakW!!, 1e-9)
+        assertNull(unrated.peakOfRated)
+    }
+
+    @Test
     fun openCycleReportsEnergySinceRecharge() {
         val events = listOf(mark(0, BankEventKind.RECHARGED))
         val sessions = listOf(session(10f, 60f, whIn = 20.0, startMs = hour), session(10f, 30f, whIn = 8.0, startMs = 2 * hour))

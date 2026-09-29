@@ -13,20 +13,28 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** Draft of a power bank being added or edited; [id] 0 means new. */
+/**
+ * Draft of a power bank or a named wall charger being added or edited; [id] 0 means new. A bank
+ * is rated in mAh at a nominal voltage, a charger in watts; the other kind's fields are ignored.
+ */
 data class BankDraft(
     val id: Long = 0,
     val name: String = "",
     val ratedMah: String = "",
     val nominalV: String = "3.7",
     val colorArgb: Int,
+    val kind: SourceKind = SourceKind.POWER_BANK,
+    val ratedW: String = "",
 ) {
+    val isCharger: Boolean get() = kind == SourceKind.CHARGER
     val nameError: Boolean get() = name.isBlank()
     val mahValue: Int? get() = ratedMah.trim().toIntOrNull()
-    val mahError: Boolean get() = ratedMah.isNotBlank() && (mahValue == null || mahValue!! !in 100..200_000)
+    val mahError: Boolean get() = !isCharger && ratedMah.isNotBlank() && (mahValue == null || mahValue!! !in 100..200_000)
     val voltValue: Double? get() = nominalV.trim().replace(',', '.').toDoubleOrNull()
-    val voltError: Boolean get() = voltValue == null || voltValue!! !in 1.0..24.0
-    val isValid: Boolean get() = !nameError && !mahError && !voltError
+    val voltError: Boolean get() = !isCharger && (voltValue == null || voltValue!! !in 1.0..24.0)
+    val wattValue: Double? get() = ratedW.trim().replace(',', '.').toDoubleOrNull()
+    val wattError: Boolean get() = isCharger && ratedW.isNotBlank() && (wattValue == null || wattValue!! !in 1.0..300.0)
+    val isValid: Boolean get() = !nameError && !mahError && !voltError && !wattError
 
     companion object {
         fun of(s: PowerSource) = BankDraft(
@@ -35,6 +43,8 @@ data class BankDraft(
             ratedMah = s.ratedMah?.toString().orEmpty(),
             nominalV = s.nominalV.toString(),
             colorArgb = s.colorArgb,
+            kind = s.kind,
+            ratedW = s.ratedW?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }.orEmpty(),
         )
     }
 }
@@ -46,6 +56,11 @@ class SettingsViewModel(
 
     val banks: StateFlow<List<PowerSource>> = repository.observeSources()
         .map { all -> all.filter { it.kind == SourceKind.POWER_BANK } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Named wall chargers; the built-in Charger stays the catch-all and is not listed. */
+    val chargers: StateFlow<List<PowerSource>> = repository.observeSources()
+        .map { all -> all.filter { it.kind == SourceKind.CHARGER && !it.builtIn } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun save(draft: BankDraft) {
@@ -64,11 +79,12 @@ class SettingsViewModel(
             val source = PowerSource(
                 id = draft.id,
                 name = draft.name.trim(),
-                kind = SourceKind.POWER_BANK,
-                ratedMah = draft.mahValue,
-                nominalV = draft.voltValue ?: 3.7,
+                kind = draft.kind,
+                ratedMah = if (draft.isCharger) null else draft.mahValue,
+                nominalV = if (draft.isCharger) 3.7 else draft.voltValue ?: 3.7,
                 colorArgb = draft.colorArgb,
                 archived = existing?.archived ?: false,
+                ratedW = if (draft.isCharger) draft.wattValue else null,
             )
             return if (existing == null) {
                 repository.addSource(source)

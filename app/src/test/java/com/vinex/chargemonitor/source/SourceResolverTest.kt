@@ -85,4 +85,20 @@ class SourceResolverTest {
     fun promptTimeoutIsSixtySeconds() {
         assertEquals(60_000L, SourceResolver.PROMPT_TIMEOUT_MS)
     }
+
+    @Test
+    fun acOffersTheNamedChargerInPlaceOfTheBuiltIn() {
+        val anker = 12L
+        val d = SourceResolver.decide(PlugType.AC, banks, lastNonLaptopSourceId = anker, chargerId = anker)
+        assertEquals(anker, d.sourceId)
+        assertFalse(d.countsTowardBank)
+        assertEquals(listOf(7L, 5L, anker), d.options)
+    }
+
+    @Test
+    fun acWithNoHistoryFallsBackToTheNamedCharger() {
+        val d = SourceResolver.decide(PlugType.AC, emptyList(), lastNonLaptopSourceId = null, chargerId = 12L)
+        assertEquals(12L, d.sourceId)
+        assertEquals(listOf(12L), d.options)
+    }
 }

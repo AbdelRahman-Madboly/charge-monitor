@@ -135,7 +135,7 @@ private fun NotificationStep() {
     }
     StepTitle(
         "Notifications",
-        "Charge Monitor keeps one quiet notification while it runs, asks which power bank you plugged in, " +
+        "Bank Tester keeps one quiet notification while it runs, asks which power bank you plugged in, " +
             "and can alert you at a target level or high temperature.",
     )
     if (enabled) {
@@ -162,7 +162,7 @@ private fun BatteryStep() {
     StepTitle(
         "Keep recording in the background",
         "Android may stop background apps to save battery, which would cut sessions short. " +
-            "Charge Monitor uses no timers while unplugged, so allowing it costs almost nothing.",
+            "Bank Tester uses no timers while unplugged, so allowing it costs almost nothing.",
     )
     if (exempt) {
         Done("Background use allowed")
@@ -179,7 +179,7 @@ private fun BatteryStep() {
     }
     if (SystemSettings.isSamsung) {
         Text(
-            "Samsung phones: also add Charge Monitor to \"Never sleeping apps\" under Battery → Background usage limits.",
+            "Samsung phones: also add Bank Tester to \"Never sleeping apps\" under Battery → Background usage limits.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -1,17 +1,22 @@
-"""Generates the Charge Monitor launcher icon layers from pixel art.
+"""Generates the launcher icon layers.
 
-Single source of truth: appicon.txt (the same pixel battery as the 18650 tester
-icon). The generated drawables are checked in so the Android build needs no
-Python, but they must never be hand-edited -- rerun this script instead:
+Two sources, both in this directory:
+
+  source_icon.png   the 18650 tester's icon, the full-colour art, used as-is
+  appicon.txt       a pixel trace of it, used only for the themed icon
+
+The generated files are checked in so the Android build needs no Python, but
+they must never be hand-edited -- rerun this script instead (needs Pillow):
 
     python3 tools/glyphgen/generate.py
 
 Outputs:
-  app/src/main/res/drawable/ic_launcher_foreground.xml   full-colour layer
-  app/src/main/res/drawable/ic_launcher_monochrome.xml   themed-icon layer
+  app/src/main/res/mipmap-<density>/ic_launcher_foreground.png   full colour
+  app/src/main/res/drawable/ic_launcher_monochrome.xml            themed icon
+  tools/glyphgen/preview.png                                      for review
 
-The background layer is a flat colour (#D8DCDF) in res/values/colors.xml, so it
-needs no generation.
+The background layer is a flat colour in res/values/colors.xml and must match
+the source's tile colour (TILE_COLOR); a test checks that.
 """
 
 import re
@@ -22,23 +27,49 @@ HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent.parent
 
 ICON_PATH = HERE / "appicon.txt"
-DRAWABLE_DIR = PROJECT_ROOT / "app/src/main/res/drawable"
-FOREGROUND_OUT = DRAWABLE_DIR / "ic_launcher_foreground.xml"
+SOURCE_PNG = HERE / "source_icon.png"
+PREVIEW_OUT = HERE / "preview.png"
+RES_DIR = PROJECT_ROOT / "app/src/main/res"
+DRAWABLE_DIR = RES_DIR / "drawable"
 MONOCHROME_OUT = DRAWABLE_DIR / "ic_launcher_monochrome.xml"
+COLORS_XML = RES_DIR / "values/colors.xml"
 
-# Adaptive icons are 108x108 with only the central ~72x72 guaranteed unclipped
-# by the launcher's mask, so the art is scaled to sit inside that.
+# Adaptive icons are 108x108 dp. Launchers show the central 72x72 dp through a
+# mask, and only a 66 dp circle survives every mask shape. The battery is a tall
+# rectangle about 0.55 as wide as it is high, so for its corners to stay inside
+# that circle its height must stay under ~57 dp.
 ICON_VIEWPORT = 108.0
-ICON_SAFE = 72.0
+ICON_VISIBLE = 72.0
+ICON_SAFE_DIAMETER = 66.0
+ART_HEIGHT = 56.0
+
+# The flat tile the battery sits on in the source; also the adaptive background.
+TILE_COLOR = (0xCD, 0xD6, 0xD5)
+
+# Pixels this far (sum of channel differences) from the tile are part of the art.
+ART_THRESHOLD = 30
+
+# The source's rounded tile has a dark rim in its corners; the art never
+# reaches this close to the edge, so the rim is excluded from the crop.
+TILE_RIM_PX = 16
+
+# Foreground PNG edge in pixels per density bucket (108 dp at 1x, 1.5x, ...).
+DENSITIES = {
+    "mdpi": 108,
+    "hdpi": 162,
+    "xhdpi": 216,
+    "xxhdpi": 324,
+    "xxxhdpi": 432,
+}
 
 ICON_COLORS = {
     "K": "#141414",
     "G": "#A8B0B8",
     "W": "#FFFFFF",
-    "h": "#A5E06A",
-    "g": "#5FBF3F",
-    "d": "#3B8F2B",
-    "Y": "#F5D33F",
+    "h": "#96E85A",
+    "g": "#5AC64E",
+    "d": "#379646",
+    "Y": "#FDEB59",
 }
 
 # The themed icon is tinted by the launcher, so a filled silhouette would read as
@@ -102,7 +133,7 @@ def icon_runs(rows, keys=None):
 def render_vector(rows, runs, fill_for):
     height = len(rows)
     width = len(rows[0])
-    scale = ICON_SAFE / max(width, height)
+    scale = ART_HEIGHT / max(width, height)
     ox = (ICON_VIEWPORT - width * scale) / 2.0
     oy = (ICON_VIEWPORT - height * scale) / 2.0
 
@@ -128,25 +159,116 @@ def render_vector(rows, runs, fill_for):
     return "\n".join(lines)
 
 
-def emit_foreground(rows, out_path):
-    runs = icon_runs(rows)
-    out_path.write_text(render_vector(rows, runs, ICON_COLORS.__getitem__), encoding="utf-8")
-    return len(runs)
-
-
 def emit_monochrome(rows, out_path):
     runs = icon_runs(rows, keys=MONOCHROME_KEYS)
     out_path.write_text(render_vector(rows, runs, lambda _: MONOCHROME_FILL), encoding="utf-8")
     return len(runs)
 
 
-def main():
+def art_bbox(image):
+    """Bounding box (left, top, right, bottom; exclusive) of everything in the
+    RGBA source that is not the flat tile or its rim."""
+    px = image.load()
+    w, h = image.size
+    xs, ys = [], []
+    for y in range(TILE_RIM_PX, h - TILE_RIM_PX):
+        for x in range(TILE_RIM_PX, w - TILE_RIM_PX):
+            r, g, b, a = px[x, y]
+            if a == 255 and sum(abs(c - t) for c, t in zip((r, g, b), TILE_COLOR)) > ART_THRESHOLD:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        raise ValueError("source icon has no art on its tile")
+    return min(xs), min(ys), max(xs) + 1, max(ys) + 1
+
+
+def render_foreground(image, edge_px):
+    """The source's art, scaled so its longer side is ART_HEIGHT, centred on
+    an opaque square of the tile colour (identical to the background layer, so the
+    seam is invisible whatever mask the launcher applies)."""
+    from PIL import Image
+
+    left, top, right, bottom = art_bbox(image)
+    art = image.crop((left, top, right, bottom)).convert("RGB")
+    target = edge_px * ART_HEIGHT / ICON_VIEWPORT
+    scale = target / max(art.size)
+    size = (max(1, round(art.size[0] * scale)), max(1, round(art.size[1] * scale)))
+    art = art.resize(size, Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (edge_px, edge_px), TILE_COLOR)
+    canvas.paste(art, ((edge_px - size[0]) // 2, (edge_px - size[1]) // 2))
+    return canvas
+
+
+def emit_foregrounds(image):
+    written = []
+    for density, edge in DENSITIES.items():
+        out = RES_DIR / f"mipmap-{density}" / "ic_launcher_foreground.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        render_foreground(image, edge).save(out, optimize=True)
+        written.append(out)
+    return written
+
+
+def render_preview(image):
+    """The icon under the masks launchers use (circle, squircle, rounded square,
+    teardrop), plus the themed icon, at launcher-ish size, for review."""
+    from PIL import Image, ImageDraw
+
+    edge = 216
+    fg = render_foreground(image, edge)
+    # Launchers show the central ICON_VISIBLE of the layer through the mask.
+    inset = round(edge * (ICON_VIEWPORT - ICON_VISIBLE) / ICON_VIEWPORT / 2)
+    box = (inset, inset, edge - inset, edge - inset)
+
+    def masked(draw_mask):
+        mask = Image.new("L", (edge, edge), 0)
+        draw_mask(ImageDraw.Draw(mask))
+        tile = Image.new("RGBA", (edge, edge), (0, 0, 0, 0))
+        tile.paste(fg, (0, 0), mask)
+        return tile.crop(box)
+
+    r = (box[2] - box[0]) // 2
+    shapes = [
+        masked(lambda d: d.ellipse(box, fill=255)),
+        masked(lambda d: d.rounded_rectangle(box, radius=round(r * 0.75), fill=255)),
+        masked(lambda d: d.rounded_rectangle(box, radius=round(r * 0.3), fill=255)),
+        masked(lambda d: (d.ellipse(box, fill=255), d.rectangle((box[0] + r, box[1] + r, box[2], box[3]), fill=255))),
+    ]
+
     rows = parse_icon(read_lines(ICON_PATH))
+    mono = Image.new("RGBA", (edge, edge), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(mono)
+    draw.ellipse(box, fill=(0x2E, 0x3A, 0x2E, 255))
+    scale = edge * ART_HEIGHT / ICON_VIEWPORT / max(len(rows), len(rows[0]))
+    ox = (edge - len(rows[0]) * scale) / 2
+    oy = (edge - len(rows) * scale) / 2
+    for x, y, run, _ in icon_runs(rows, keys=MONOCHROME_KEYS):
+        draw.rectangle(
+            (ox + x * scale, oy + y * scale, ox + (x + run) * scale - 1, oy + (y + 1) * scale - 1),
+            fill=(0xC8, 0xF0, 0xB4, 255),
+        )
+    shapes.append(mono.crop(box))
+
+    side = box[2] - box[0]
+    gap = 24
+    sheet = Image.new("RGB", (gap + len(shapes) * (side + gap), side + 2 * gap), (0x1B, 0x1D, 0x20))
+    for i, tile in enumerate(shapes):
+        sheet.paste(tile, (gap + i * (side + gap), gap), tile)
+    return sheet
+
+
+def main():
+    from PIL import Image
+
+    rows = parse_icon(read_lines(ICON_PATH))
+    source = Image.open(SOURCE_PNG).convert("RGBA")
     DRAWABLE_DIR.mkdir(parents=True, exist_ok=True)
-    fg = emit_foreground(rows, FOREGROUND_OUT)
+    for out in emit_foregrounds(source):
+        print(f"-> {out.relative_to(PROJECT_ROOT)}")
     mono = emit_monochrome(rows, MONOCHROME_OUT)
-    print(f"{fg} paths -> {FOREGROUND_OUT.relative_to(PROJECT_ROOT)}")
     print(f"{mono} paths -> {MONOCHROME_OUT.relative_to(PROJECT_ROOT)}")
+    render_preview(source).save(PREVIEW_OUT)
+    print(f"-> {PREVIEW_OUT.relative_to(PROJECT_ROOT)}")
     return 0
 
 

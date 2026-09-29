@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [PowerSource::class, ChargeSession::class, Sample::class, BankEvent::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -24,7 +24,7 @@ abstract class AppDatabase : RoomDatabase() {
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, NAME)
                 .addCallback(SeedCallback)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
 
         /**
@@ -46,6 +46,16 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_bank_event_sourceId ON bank_event (sourceId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_bank_event_tMs ON bank_event (tMs)")
+            }
+        }
+
+        /**
+         * Adds a charger's rated output. Nullable with no default, so every existing row (banks and
+         * built-ins) reads as "no rating" and nothing already recorded changes.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE power_source ADD COLUMN ratedW REAL")
             }
         }
     }

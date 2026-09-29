@@ -39,6 +39,11 @@ object StatsCalculator {
         val sinceRechargeWh: Double?,
         val sinceRechargeMah: Double?,
         val sessionsUsed: Int,
+        /**
+         * Median over [completedCycles] of the phone percentage added per drain, / 100: how many
+         * full phone charges one full bank gives. Exact, like [fullChargeEquivalents].
+         */
+        val cyclePhoneCharges: Double? = null,
     ) {
         /** deliveredMah as multiples of the label, e.g. 2.4 "bank-fulls". */
         val deliveredBankFulls: Double? get() = ratedMah?.let { deliveredMah / it }
@@ -114,6 +119,7 @@ object StatsCalculator {
 
         val marks = events.filter { it.sourceId == bank.id }.sortedBy { it.tMs }
         val cycles = mutableListOf<Double>()
+        val cycleCharges = mutableListOf<Double>()
         var skipped = 0
         var cycleStart: Long? = null
         for (mark in marks) {
@@ -126,7 +132,12 @@ object StatsCalculator {
                     val usable = inCycle.isNotEmpty() && inCycle.all {
                         isCountable(it) && it.sourceConfirmed && (includeUsedWhileCharging || !it.usedWhileCharging)
                     }
-                    if (usable) cycles += mahOf(inCycle.sumOf { it.whIn }) else skipped++
+                    if (usable) {
+                        cycles += mahOf(inCycle.sumOf { it.whIn })
+                        cycleCharges += inCycle.sumOf { it.levelAdded.toDouble() } / 100.0
+                    } else {
+                        skipped++
+                    }
                 }
             }
         }
@@ -146,7 +157,59 @@ object StatsCalculator {
             sinceRechargeWh = sinceWh,
             sinceRechargeMah = sinceWh?.let(::mahOf),
             sessionsUsed = counted.size,
+            cyclePhoneCharges = cycleCharges.takeIf { it.isNotEmpty() }?.let(::median),
         )
+    }
+
+    /**
+     * How a wall charger performs, from the battery's side: the phone only sees power going
+     * into its cell, so [peakW] is what the charger achieved after the phone's own charging
+     * circuit, never above what the phone accepts (about 25 W on an A54).
+     */
+    data class ChargerStats(
+        /** Highest power into the battery over every counted session. */
+        val peakW: Double?,
+        /** [peakW] / the charger's rated W; null without a rating. */
+        val peakOfRated: Double?,
+        /** Percent added per hour over admitted sessions, time-weighted, taper included. */
+        val pctPerHour: Double?,
+        /** Sessions that reached 100 % while plugged in. */
+        val fullCount: Int,
+    )
+
+    /**
+     * [ChargerStats] over one charger's [sessions]. Peak comes from every closed, non-mock
+     * session: using the phone lowers power into the battery, never raises it. Speed only from
+     * sessions [includeUsedWhileCharging] admits, since screen use slows charging for reasons
+     * that are not the charger's.
+     */
+    fun chargerStats(sessions: List<ChargeSession>, ratedW: Double?, includeUsedWhileCharging: Boolean): ChargerStats {
+        val counted = sessions.filter(::isCountable)
+        val peak = counted.maxOfOrNull { it.peakW }?.takeIf { it > 0.0 }
+        val admitted = counted.filter { (includeUsedWhileCharging || !it.usedWhileCharging) && it.levelAdded > 0f }
+        val hours = admitted.sumOf { ((it.endMs ?: it.startMs) - it.startMs) / 3_600_000.0 }
+        val pct = admitted.sumOf { it.levelAdded.toDouble() }
+        return ChargerStats(
+            peakW = peak,
+            peakOfRated = peak?.let { p -> ratedW?.takeIf { it > 0.0 }?.let { p / it } },
+            pctPerHour = if (hours > 0.0) pct / hours else null,
+            fullCount = counted.count { it.reachedFull },
+        )
+    }
+
+    /** Nominal voltage of a phone's Li-ion cell; A54-class phones are rated 3.85 to 3.88 V. */
+    const val PHONE_NOMINAL_V = 3.87
+
+    /**
+     * Full phone charges the bank's label promises: its rated energy, less [lossFactor], over
+     * the phone battery's energy. The yardstick a measured drain is judged against; null
+     * without a rating or a phone capacity.
+     */
+    fun labelPhoneCharges(bank: PowerSource, phoneDesignMah: Int?, lossFactor: Double): Double? {
+        val ratedWh = bank.ratedWh ?: return null
+        val phoneWh = phoneDesignMah?.takeIf { it > 0 }?.let { it * PHONE_NOMINAL_V / 1000.0 } ?: return null
+        val loss = lossFactor.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(1.0) ?: return null
+        return ratedWh * loss / phoneWh
     }
 
     /**

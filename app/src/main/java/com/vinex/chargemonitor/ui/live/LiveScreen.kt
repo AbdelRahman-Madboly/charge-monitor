@@ -147,8 +147,10 @@ private fun ChargingBody(ui: LiveUi) {
                 modifier = Modifier.padding(bottom = 10.dp),
             )
         }
-        Text(statusLine(snap.status, snap.plug), style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val rated = ui.live.source?.ratedW?.takeIf { it > 0.0 }
+        val status = statusLine(snap.status, snap.plug) +
+            (rated?.let { " · ${Format.percent(snap.powerW / it)} % of ${Format.watts(it)} W rated" } ?: "")
+        Text(status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 
     TileGrid(

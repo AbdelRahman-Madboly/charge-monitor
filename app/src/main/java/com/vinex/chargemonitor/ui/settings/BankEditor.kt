@@ -32,6 +32,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.components.Space
 import com.vinex.chargemonitor.ui.theme.BankPalette
 
@@ -45,7 +46,10 @@ fun BankEditorDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (draft.id == 0L) "Add power bank" else "Edit power bank") },
+        title = {
+            val what = if (draft.isCharger) "charger" else "power bank"
+            Text(if (draft.id == 0L) "Add $what" else "Edit $what")
+        },
         text = { BankFields(draft, onChange) },
         confirmButton = { TextButton(onClick = onSave, enabled = draft.isValid) { Text("Save") } },
         dismissButton = {
@@ -68,20 +72,40 @@ fun BankFields(draft: BankDraft, onChange: (BankDraft) -> Unit, modifier: Modifi
             value = draft.name,
             onValueChange = { onChange(draft.copy(name = it.take(40))) },
             label = { Text("Name") },
-            placeholder = { Text("e.g. Anker 20k") },
+            placeholder = { Text(if (draft.isCharger) "e.g. Anker 30W" else "e.g. Anker 20k") },
             singleLine = true,
             isError = draft.nameError && draft.name.isNotEmpty(),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
             modifier = Modifier.fillMaxWidth(),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+        if (draft.isCharger) {
+            OutlinedTextField(
+                value = draft.ratedW,
+                onValueChange = { v -> onChange(draft.copy(ratedW = v.filter { it.isDigit() || it == '.' || it == ',' }.take(5))) },
+                label = { Text("Rated output W") },
+                singleLine = true,
+                isError = draft.wattError,
+                supportingText = { Text(if (draft.wattError) "1 to 300" else "From the label, e.g. 30") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
             OutlinedTextField(
                 value = draft.ratedMah,
                 onValueChange = { v -> onChange(draft.copy(ratedMah = v.filter { it.isDigit() }.take(6))) },
                 label = { Text("Rated mAh") },
                 singleLine = true,
                 isError = draft.mahError,
-                supportingText = { Text(if (draft.mahError) "100 to 200,000" else "From the label") },
+                supportingText = {
+                    val wh = draft.mahValue?.let { mah -> draft.voltValue?.let { v -> mah * v / 1000.0 } }
+                    Text(
+                        when {
+                            draft.mahError -> "100 to 200,000"
+                            wh != null && !draft.voltError -> "= ${Format.wh(wh)} Wh"
+                            else -> "From the label"
+                        },
+                    )
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.weight(1.4f),
             )

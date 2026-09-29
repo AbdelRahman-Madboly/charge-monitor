@@ -1,5 +1,8 @@
 # Charge Monitor
 
+Installed as **Bank Tester**. The package id stays `com.vinex.chargemonitor`, so an update keeps
+every recorded session.
+
 An Android app that records every charge of the phone in the background, per power source, so
 you can see how many full phone charges each power bank really gives, its usable capacity against
 the label, and what current, voltage and wattage each charger delivers.
@@ -8,7 +11,7 @@ The design and its reasoning are in
 [`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
 
 Status: prototype, running on a Galaxy A54 (Android 16). Live, Dashboard, History and Settings
-work end to end; 133 JVM tests pass. Not yet checked on a device: the home-screen widget, CSV
+work end to end; 151 JVM tests pass. Not yet checked on a device: the home-screen widget, CSV
 export, and Samsung's fast-charge flag.
 
 | Live | Dashboard | History |
@@ -27,8 +30,23 @@ Screenshots are from the emulator with mock data.
   the bank's card, divided by a conversion-loss factor (0.85 by default).
 - **Laptops** are recognised by the USB data connection and never count toward a power bank. A
   laptop port that fast-charges reports as AC, so plug type alone cannot tell.
+- **Phone charges per full bank** is the median, over marked drains, of the % added between a
+  *Recharged* and the next *Ran empty*. Before the first drain the card shows what the label
+  promises instead: rated Wh × loss factor ÷ the phone battery's Wh.
+- **Chargers** can be added by name with their rated watts. A charger card shows peak power into
+  the battery against that rating, average power, and charging speed in %/h. It is all measured
+  at the battery, so a 30 W charger on a phone that accepts 25 W never reads 30.
+- **Comparing banks** uses Wh, not mAh. A mAh label only compares with another rated at the
+  same cell voltage.
 - **Mains or power bank?** The phone cannot tell, so plugging into AC raises a notification that
   asks. Unconfirmed sessions stay out of bank totals.
+
+## Preset sources
+
+A new install, and the first launch after an upgrade, adds the sources under test once
+(`SourcePresets`): the 3S8P pack from the 18650 tester, a 1S10P NCR18650B bank and the Anker
+Zolo 30 W charger. A preset whose name is already taken is skipped, and existing rows are never
+changed. The Appearance setting picks System, Light or Dark.
 
 ## Build
 
@@ -67,13 +85,19 @@ Debug builds also have a mock toggle in Settings, for devices where the property
 
 ## Launcher icon
 
-The icon is pixel art in `tools/glyphgen/appicon.txt`. The drawables are generated, never edited
-by hand:
+The icon is the 18650 tester's, `tools/glyphgen/source_icon.png`, used as-is. The generator
+renders it per density on a background of its own tile colour, sized so the battery stays inside
+the 66 dp circle every launcher mask keeps. `appicon.txt` is a pixel trace of it, used only for
+the themed (monochrome) icon. Never edit the generated files by hand:
 
 ```bash
-python3 tools/glyphgen/generate.py
-python3 tools/glyphgen/test_generate.py   # needs pytest
+uv run --no-project --with pillow python tools/glyphgen/generate.py
+uv run --no-project --with pillow --with pytest python tools/glyphgen/test_generate.py
 ```
+
+`tools/glyphgen/preview.png` shows the result under the common mask shapes.
+
+![Launcher icon under common masks](tools/glyphgen/preview.png)
 
 ## Permissions
 

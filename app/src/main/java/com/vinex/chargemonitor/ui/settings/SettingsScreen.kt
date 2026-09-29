@@ -49,6 +49,8 @@ import com.vinex.chargemonitor.BuildConfig
 import com.vinex.chargemonitor.ServiceLocator
 import com.vinex.chargemonitor.battery.CurrentUnit
 import com.vinex.chargemonitor.data.PowerSource
+import com.vinex.chargemonitor.data.SourceKind
+import com.vinex.chargemonitor.data.ThemeMode
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.components.AccuracyInfoSheet
 import com.vinex.chargemonitor.ui.components.ColorDot
@@ -63,6 +65,7 @@ import kotlin.math.roundToInt
 fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewModel()) {
     val s = vm.settings
     val banks by vm.banks.collectAsStateWithLifecycle()
+    val chargers by vm.chargers.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<BankDraft?>(null) }
     var info by rememberSaveable { mutableStateOf(false) }
 
@@ -75,16 +78,56 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
     ) {
         Text("Settings", style = MaterialTheme.typography.titleLarge)
 
+        fun newDraft(kind: SourceKind): BankDraft {
+            val used = (banks + chargers).filter { !it.archived }.map { it.colorArgb }.toSet()
+            return BankDraft(colorArgb = BankPalette.firstOrNull { it !in used } ?: BankPalette.first(), kind = kind)
+        }
+
         SectionHeader("Power banks")
-        BanksPanel(
-            banks = banks,
-            onEdit = { editing = BankDraft.of(it) },
-            onAdd = {
-                val used = banks.map { it.colorArgb }.toSet()
-                editing = BankDraft(colorArgb = BankPalette.firstOrNull { it !in used } ?: BankPalette.first())
+        SourcesPanel(
+            sources = banks,
+            emptyText = "No power banks yet. Add each bank you own so its charges are counted separately.",
+            addText = "Add power bank",
+            detail = { b ->
+                listOfNotNull(
+                    b.ratedMah?.let { "${Format.mah(it.toDouble())} mAh" },
+                    "${Format.f(b.nominalV, 1)} V",
+                    b.ratedWh?.let { "${Format.wh(it)} Wh" },
+                ).joinToString(" · ")
             },
+            onEdit = { editing = BankDraft.of(it) },
+            onAdd = { editing = newDraft(SourceKind.POWER_BANK) },
             onRestore = { vm.setArchived(it.id, false) },
         )
+
+        SectionHeader("Chargers")
+        SourcesPanel(
+            sources = chargers,
+            emptyText = "Add a wall charger by name to test it on its own; anything else stays under the built-in Charger.",
+            addText = "Add charger",
+            detail = { c -> c.ratedW?.let { "${Format.watts(it)} W rated" } ?: "No rating" },
+            onEdit = { editing = BankDraft.of(it) },
+            onAdd = { editing = newDraft(SourceKind.CHARGER) },
+            onRestore = { vm.setArchived(it.id, false) },
+        )
+
+        SectionHeader("Appearance")
+        Panel {
+            val mode by s.themeMode.flow.collectAsStateWithLifecycle()
+            Text("Theme", style = MaterialTheme.typography.bodyLarge)
+            Segmented(
+                options = ThemeMode.entries,
+                selected = mode,
+                label = {
+                    when (it) {
+                        ThemeMode.SYSTEM -> "System"
+                        ThemeMode.LIGHT -> "Light"
+                        ThemeMode.DARK -> "Dark"
+                    }
+                },
+                onSelect = { s.themeMode.set(it) },
+            )
+        }
 
         SectionHeader("Estimates")
         Panel {
@@ -208,7 +251,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
             }
             Text(
-                "Charge Monitor ${BuildConfig.VERSION_NAME}. Works offline; nothing leaves the phone.",
+                "Bank Tester ${BuildConfig.VERSION_NAME}. Works offline; nothing leaves the phone.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -238,19 +281,22 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
 }
 
 @Composable
-private fun BanksPanel(
-    banks: List<PowerSource>,
+private fun SourcesPanel(
+    sources: List<PowerSource>,
+    emptyText: String,
+    addText: String,
+    detail: (PowerSource) -> String,
     onEdit: (PowerSource) -> Unit,
     onAdd: () -> Unit,
     onRestore: (PowerSource) -> Unit,
 ) {
-    val active = banks.filter { !it.archived }
-    val archived = banks.filter { it.archived }
-    var showArchived by rememberSaveable { mutableStateOf(false) }
+    val active = sources.filter { !it.archived }
+    val archived = sources.filter { it.archived }
+    var showArchived by rememberSaveable(addText) { mutableStateOf(false) }
     Panel {
         if (active.isEmpty()) {
             Text(
-                "No power banks yet. Add each bank you own so its charges are counted separately.",
+                emptyText,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -265,7 +311,7 @@ private fun BanksPanel(
                 Column(Modifier.weight(1f)) {
                     Text(b.name, style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        listOfNotNull(b.ratedMah?.let { "${Format.mah(it.toDouble())} mAh" }, "${Format.f(b.nominalV, 1)} V").joinToString(" · "),
+                        detail(b),
                         style = Readout.small,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -275,7 +321,7 @@ private fun BanksPanel(
         }
         FilledTonalButton(onClick = onAdd) {
             Icon(Icons.Filled.Add, contentDescription = null)
-            Text(" Add power bank")
+            Text(" $addText")
         }
         if (archived.isNotEmpty()) {
             TextButton(onClick = { showArchived = !showArchived }) {
@@ -317,7 +363,7 @@ private fun BackgroundPanel() {
         }
         if (SystemSettings.isSamsung) {
             Text(
-                "On Samsung phones also add Charge Monitor to \"Never sleeping apps\" (Battery → Background usage limits).",
+                "On Samsung phones also add Bank Tester to \"Never sleeping apps\" (Battery → Background usage limits).",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

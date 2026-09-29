@@ -78,37 +78,51 @@ fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = view
 
         FilterRow(ui.sources, ui.filter, vm::setFilter)
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Include sessions used while charging", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    "Affects capacity estimates and average power. Full charges always count every session.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = ui.includeUsed, onCheckedChange = vm::setIncludeUsed)
-        }
-
         if (ui.loaded && ui.cards.isEmpty()) {
             Text(
-                "No sessions yet. Add your power banks in Settings, then charge as usual; " +
+                "No sessions yet. Add your power banks and chargers in Settings, then charge as usual; " +
                     "every charge is recorded in the background.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        ui.cards.forEach { card ->
-            if (card.source.kind == SourceKind.POWER_BANK) {
+        val bankCards = ui.cards.filter { it.source.kind == SourceKind.POWER_BANK }
+        val chargerCards = ui.cards.filter { it.source.kind == SourceKind.CHARGER }
+        val otherCards = ui.cards.filter { it.source.kind == SourceKind.LAPTOP || it.source.kind == SourceKind.WIRELESS }
+
+        if (bankCards.isNotEmpty()) {
+            SectionHeader("Power banks")
+            if (ui.filter == null && bankCards.size >= 2) CompareBanks(bankCards)
+            bankCards.forEach { card ->
                 BankCard(
                     card,
                     ui.lossFactor,
                     onMark = { kind -> vm.markBank(card.source.id, kind) },
                     onUndo = { id -> vm.undoMark(id) },
                 )
-            } else {
-                SourceCardView(card)
+            }
+        }
+        if (chargerCards.isNotEmpty()) {
+            SectionHeader("Chargers")
+            chargerCards.forEach { ChargerCard(it) }
+        }
+        if (otherCards.isNotEmpty()) {
+            SectionHeader("Other sources")
+            otherCards.forEach { SourceCardView(it) }
+        }
+
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = Space.s)) {
+                    Text("Include sessions used while charging", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Affects capacity, average power and charging speed. Full charges always count every session.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = ui.includeUsed, onCheckedChange = vm::setIncludeUsed)
             }
         }
 
@@ -137,13 +151,16 @@ private fun FilterRow(sources: List<PowerSource>, selected: Long?, onSelect: (Lo
     }
 }
 
+/** Name on its own line, rating under it, so a long name never squeezes the figures. */
 @Composable
 private fun CardHeader(source: PowerSource, subtitle: String?) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-        ColorDot(Color(source.colorArgb), size = 12.dp)
-        Text(source.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        subtitle?.let {
-            Text(it, style = Readout.small, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+        ColorDot(Color(source.colorArgb), size = 12.dp, modifier = Modifier.padding(top = 6.dp))
+        Column(Modifier.weight(1f)) {
+            Text(source.name, style = MaterialTheme.typography.titleMedium)
+            subtitle?.let {
+                Text(it, style = Readout.small, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -151,17 +168,18 @@ private fun CardHeader(source: PowerSource, subtitle: String?) {
 @Composable
 private fun BankCard(card: SourceCard, lossFactor: Float, onMark: (BankEventKind) -> Unit, onUndo: (Long) -> Unit) {
     Panel {
-        CardHeader(card.source, card.source.ratedMah?.let { "${Format.mah(it.toDouble())} mAh rated" })
+        CardHeader(card.source, ratedLabel(card.source))
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(Format.fullCharges(card.fullCharges), style = Readout.hero.copy(fontSize = Readout.hero.fontSize * 0.8f),
+            Text(Format.fullCharges(card.fullCharges), style = Readout.hero.copy(fontSize = Readout.hero.fontSize * 0.75f),
                 color = MaterialTheme.colorScheme.primary)
             Text(
-                "  full phone charges",
+                "  phone charges so far",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }
+        PerDrain(card)
         MiniStats(card)
         CapacitySection(card.capacity, lossFactor)
         RefillMarks(card.lastMark, onMark, onUndo)
@@ -174,6 +192,137 @@ private fun BankCard(card: SourceCard, lossFactor: Float, onMark: (BankEventKind
                     "not counted: the source prompt was not answered. Confirm them in History.",
                 color = MaterialTheme.colorScheme.error,
             )
+        }
+    }
+}
+
+private fun ratedLabel(source: PowerSource): String? {
+    val mah = source.ratedMah ?: return null
+    val wh = source.ratedWh?.let { " · ${Format.wh(it)} Wh" } ?: ""
+    return "${Format.mah(mah.toDouble())} mAh$wh"
+}
+
+/**
+ * The number a bank is bought for: phone charges from one full bank. Measured once a drain is
+ * marked; until then the label's promise, so there is something to hold the result against.
+ */
+@Composable
+private fun PerDrain(card: SourceCard) {
+    val measured = card.capacity?.cyclePhoneCharges
+    val promised = card.labelPhoneCharges
+    if (measured == null && promised == null) return
+    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+        if (measured != null) {
+            StatRow("Phone charges per full bank", Format.f(measured, 2))
+        }
+        if (promised != null) {
+            StatRow("Label promises", "≈ ${Format.f(promised, 1)}")
+        }
+    }
+}
+
+/**
+ * Every bank on one panel, so a bought bank and a built one can be read against each other
+ * without scrolling between cards. Wh, not mAh, is the comparable size: two labels in mAh
+ * only compare when both are rated at the same cell voltage.
+ */
+@Composable
+private fun CompareBanks(cards: List<SourceCard>) {
+    Panel {
+        Text("Compare banks", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            CompareCell("", Modifier.weight(1.6f), header = true)
+            CompareCell("Rated Wh", Modifier.weight(1f), header = true)
+            CompareCell("Real", Modifier.weight(0.8f), header = true)
+            CompareCell("Per bank", Modifier.weight(1f), header = true)
+            CompareCell("Avg W", Modifier.weight(0.8f), header = true)
+        }
+        cards.forEach { card ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                Row(
+                    Modifier.weight(1.6f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Space.xs),
+                ) {
+                    ColorDot(Color(card.source.colorArgb), size = 8.dp)
+                    Text(card.source.name, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                }
+                CompareCell(Format.wh(card.source.ratedWh), Modifier.weight(1f))
+                CompareCell(card.capacity?.ratioOfRated?.let { "${Format.percent(it)} %" } ?: "--", Modifier.weight(0.8f))
+                val perBank = card.capacity?.cyclePhoneCharges?.let { Format.f(it, 2) }
+                    ?: card.labelPhoneCharges?.let { "≈${Format.f(it, 1)}" }
+                    ?: "--"
+                CompareCell(perBank, Modifier.weight(1f))
+                CompareCell(Format.watts(card.avgW), Modifier.weight(0.8f))
+            }
+        }
+        Note(
+            "Real: measured capacity against the label, after one marked drain. Per bank: full phone " +
+                "charges from one full bank; ≈ is the label's promise until a drain is measured.",
+        )
+    }
+}
+
+@Composable
+private fun CompareCell(text: String, modifier: Modifier = Modifier, header: Boolean = false) {
+    Text(
+        text,
+        style = if (header) MaterialTheme.typography.labelMedium else Readout.small,
+        color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+        modifier = modifier,
+    )
+}
+
+/**
+ * A wall charger's test result. Everything is measured at the battery, so the numbers describe
+ * the charger and the phone together; the note says so, because a 30 W charger on a phone that
+ * accepts 25 W will never show 30.
+ */
+@Composable
+private fun ChargerCard(card: SourceCard) {
+    val stats = card.charger ?: StatsCalculator.ChargerStats(null, null, null, 0)
+    val rated = card.source.ratedW
+    Panel {
+        CardHeader(card.source, rated?.let { "${Format.watts(it)} W rated" } ?: if (card.source.builtIn) "any charger" else null)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                Format.watts(stats.peakW),
+                style = Readout.hero.copy(fontSize = Readout.hero.fontSize * 0.75f),
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                "  W peak into the battery",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+        stats.peakOfRated?.let { ratio ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                LinearProgressIndicator(
+                    progress = { ratio.toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                    strokeCap = StrokeCap.Round,
+                )
+                Text("${Format.percent(ratio)} % of rated", style = Readout.small.copy(fontWeight = FontWeight.SemiBold))
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.l)) {
+            Mini("Avg power", "${Format.watts(card.avgW)} W", Modifier.weight(1f))
+            Mini("Speed", stats.pctPerHour?.let { "${Format.f(it, 0)} %/h" } ?: "--", Modifier.weight(1f))
+            Mini("Sessions", card.sessionCount.toString(), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.l)) {
+            Mini("Energy in", "${Format.wh(card.whIn)} Wh", Modifier.weight(1f))
+            Mini("Full charges", Format.fullCharges(card.fullCharges), Modifier.weight(1f))
+            Mini("Reached 100 %", stats.fullCount.toString(), Modifier.weight(1f))
+        }
+        if (card.sessionCount == 0) {
+            Note("No sessions yet. Plug in, pick this charger on the \"Connected to?\" prompt, and charge with the screen off.")
+        } else {
+            Note("Measured at the battery, after the phone's own charging circuit. Speed includes the slow top-up above 80 %.")
         }
     }
 }
@@ -278,10 +427,7 @@ private fun CapacitySection(estimate: StatsCalculator.CapacityEstimate?, lossFac
             Note("Delivered so far: ${Format.wh(capacity.deliveredWh)} Wh$fulls (est., $loss).")
         }
         if (est == null) {
-            Note(
-                "Tap Recharged when this bank is full and Ran empty when it dies; the energy in between " +
-                    "is its real capacity. Screen off while charging gives the best estimate.",
-            )
+            Note("Tap Recharged when the bank is full and Ran empty when it dies to measure its real capacity.")
         }
     }
 }

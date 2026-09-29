@@ -6,7 +6,6 @@ import android.content.Intent
 import android.util.Log
 import com.vinex.chargemonitor.LiveBus
 import com.vinex.chargemonitor.ServiceLocator
-import com.vinex.chargemonitor.data.SourceKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,11 +48,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val settings = ServiceLocator.settings
         val source = repository.source(sourceId) ?: return
         repository.setSessionSource(sessionId, sourceId)
-        if (source.countsTowardBank) settings.rememberBank(sourceId)
-        // Only what an AC plug can be: this is the fallback when the next prompt is ignored.
-        if (source.kind == SourceKind.POWER_BANK || source.kind == SourceKind.CHARGER) {
-            settings.lastNonLaptopSourceId.set(sourceId)
-        }
+        settings.rememberSource(source)
         LiveBus.publish { state -> if (state.sessionId == sessionId) state.copy(source = source) else state }
         changes.tryEmit(SourceChange(sessionId, sourceId))
     }

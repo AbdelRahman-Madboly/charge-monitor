@@ -8,6 +8,7 @@ import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.Repository
 import com.vinex.chargemonitor.data.Sample
 import com.vinex.chargemonitor.data.SettingsStore
+import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.source.SourceResolver
 import kotlin.math.roundToInt
 
@@ -264,11 +265,21 @@ class SessionTracker(
         )
     }
 
+    /** The named charger last used, while it is still active; else the built-in Charger. */
+    private suspend fun promptCharger(): PowerSource? {
+        val named = settings.lastChargerId.value
+            ?.let { store.source(it) }
+            ?.takeIf { it.kind == SourceKind.CHARGER && !it.archived }
+        return named ?: store.source(BuiltInSources.CHARGER_ID)
+    }
+
     private suspend fun open(snapshot: BatterySnapshot, isMock: Boolean, events: MutableList<Event>) {
+        val charger = promptCharger()
         val decision = SourceResolver.decide(
             snapshot.plug,
             settings.lastBankIds.value,
             settings.lastNonLaptopSourceId.value,
+            charger?.id ?: BuiltInSources.CHARGER_ID,
         )
         val sourceId = decision.sourceId ?: return
         val draft = ChargeSession(
@@ -297,7 +308,7 @@ class SessionTracker(
             .mapNotNull { store.source(it) }
             .filter { it.countsTowardBank && !it.archived }
         val promptOptions = if (decision.prompt) {
-            recentBanks.take(2) + listOfNotNull(store.source(BuiltInSources.CHARGER_ID))
+            recentBanks.take(2) + listOfNotNull(charger)
         } else {
             emptyList()
         }

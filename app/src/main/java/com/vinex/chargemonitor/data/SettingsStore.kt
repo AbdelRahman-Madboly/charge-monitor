@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * preferences with apply(). Only this class writes these keys, so there is no need to listen for
  * external changes.
  */
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
 class SettingsStore(private val prefs: SharedPreferences) {
 
     inner class Setting<T>(
@@ -90,12 +92,46 @@ class SettingsStore(private val prefs: SharedPreferences) {
 
     val onboardingDone = bool("onboarding_done", false)
 
+    /** Highest SourcePresets.VERSION already applied; presets are only ever added once. */
+    val sourcePresetsVersion = int("bank_presets_version", 0)
+
+    /**
+     * The wall charger the "Connected to?" prompt offers; null means the built-in Charger. Set
+     * whenever a session is assigned to a charger, so the prompt follows the one in use.
+     */
+    val lastChargerId = Setting(
+        "last_charger",
+        null as Long?,
+        { k, d -> getLong(k, -1L).takeIf { it >= 0 } ?: d },
+        { k, v -> putLong(k, v ?: -1L) },
+    )
+
+    val themeMode = Setting(
+        "theme_mode",
+        ThemeMode.SYSTEM,
+        { k, d -> getString(k, null)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: d },
+        { k, v -> putString(k, v.name) },
+    )
+
     /** Debug builds only: use the synthetic battery source. */
     val mockMode = bool("mock_mode", false)
 
     /** Moves [id] to the front of [lastBankIds], keeping at most [keep] entries. */
     fun rememberBank(id: Long, keep: Int = 4) {
         lastBankIds.set((listOf(id) + lastBankIds.value.filter { it != id }).take(keep))
+    }
+
+    /**
+     * What a session assigned to [source] teaches the prompt. Shared by every path that assigns
+     * one (notification button, source picker, History), so they cannot drift apart.
+     */
+    fun rememberSource(source: PowerSource) {
+        if (source.kind == SourceKind.POWER_BANK) rememberBank(source.id)
+        if (source.kind == SourceKind.CHARGER) lastChargerId.set(source.id)
+        // Only what an AC plug can be: this is the fallback when the next prompt is ignored.
+        if (source.kind == SourceKind.POWER_BANK || source.kind == SourceKind.CHARGER) {
+            lastNonLaptopSourceId.set(source.id)
+        }
     }
 
     companion object {
