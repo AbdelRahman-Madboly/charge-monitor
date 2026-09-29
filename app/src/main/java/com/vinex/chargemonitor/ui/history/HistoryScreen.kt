@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,6 +53,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.components.ColorDot
@@ -72,6 +74,10 @@ fun HistoryScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
+    // What the user folded or opened; a view preference only, reset when the tab is rebuilt.
+    var collapsedKinds by remember { mutableStateOf(emptySet<String>()) }
+    var collapsedSources by remember { mutableStateOf(emptySet<Long>()) }
+    var expandedRuns by remember { mutableStateOf(emptySet<Long>()) }
     // Survives the document picker's activity round trip.
     var pendingKind by rememberSaveable { mutableStateOf<CsvExport.Kind?>(null) }
 
@@ -151,13 +157,14 @@ fun HistoryScreen(
                     Controls(
                         ui = ui,
                         onSort = { change { vm.setSort(it) } },
+                        onGroup = { change { vm.setGroup(it) } },
                         onSource = { change { vm.setSource(it) } },
                         onRange = { change { vm.setRange(it) } },
                         onHideShort = { change { vm.setHideShort(it) } },
                     )
                 }
 
-                if (ui.loaded && ui.view.sections.isEmpty()) {
+                if (ui.loaded && ui.view.isEmpty) {
                     item(key = "empty") {
                         EmptyFiltered(
                             hiddenShort = ui.view.hiddenShort,
@@ -168,36 +175,103 @@ fun HistoryScreen(
                     }
                 }
 
-                ui.view.sections.forEachIndexed { index, section ->
-                    val day = section.day
-                    val sourceId = section.sourceId
-                    when {
-                        day != null -> stickyHeader(key = "d-$day") { DayHeader(day, section.totals, today) }
-                        sourceId != null -> stickyHeader(key = "s-$sourceId") { SourceHeader(ui.sources[sourceId], section.totals) }
-                    }
-                    items(section.sessions, key = { it.id }) { s ->
-                        val source = ui.sources[s.sourceId]
-                        SessionRow(
-                            s = s,
-                            source = source,
-                            showDate = flat,
-                            emphasis = emphasis,
-                            liveLevel = ui.live?.takeIf { it.sessionId == s.id && s.isOpen }?.levelPct,
-                            onClick = { onOpenSession(s.id) },
-                            onConfirm = { source?.let { vm.confirm(context, s.id, it) } },
-                        )
-                        HorizontalDivider(
-                            Modifier.padding(start = Space.xl),
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                        )
-                    }
-                    if (index == ui.view.sections.lastIndex && ui.view.hiddenShort > 0) {
-                        item(key = "hidden-footer") {
-                            TextButton(
-                                onClick = { change { vm.setHideShort(false) } },
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = Space.l, vertical = Space.s),
-                            ) { Text("Show ${ui.view.hiddenShort} short sessions") }
+                when (filter.group) {
+                    HistoryGroup.DATE -> ui.view.sections.forEach { section ->
+                        val day = section.day
+                        val sourceId = section.sourceId
+                        when {
+                            day != null -> stickyHeader(key = "d-$day") { DayHeader(day, section.totals, today) }
+                            sourceId != null -> stickyHeader(key = "s-$sourceId") { SourceHeader(ui.sources[sourceId], section.totals) }
                         }
+                        items(section.sessions, key = { it.id }) { s ->
+                            SessionItem(s, ui, showDate = flat, emphasis = emphasis, onOpenSession = onOpenSession) { src ->
+                                vm.confirm(context, s.id, src)
+                            }
+                        }
+                    }
+
+                    HistoryGroup.SOURCE_TYPE -> ui.view.kinds.forEach { kind ->
+                        val kindKey = kind.kind?.name ?: "OTHER"
+                        val kindOpen = kindKey !in collapsedKinds
+                        stickyHeader(key = "k-$kindKey") {
+                            KindHeader(HistoryText.kindTitle(kind.kind), kind.totals, kindOpen) {
+                                collapsedKinds = if (kindOpen) collapsedKinds + kindKey else collapsedKinds - kindKey
+                            }
+                        }
+                        if (kindOpen) {
+                            kind.sources.forEach { group ->
+                                val srcOpen = group.sourceId !in collapsedSources
+                                item(key = "ks-${group.sourceId}") {
+                                    SourceSubHeader(ui.sources[group.sourceId], group.totals, srcOpen) {
+                                        collapsedSources =
+                                            if (srcOpen) collapsedSources + group.sourceId else collapsedSources - group.sourceId
+                                    }
+                                }
+                                if (srcOpen) {
+                                    items(group.sessions, key = { it.id }) { s ->
+                                        SessionItem(s, ui, showDate = true, emphasis = emphasis, onOpenSession = onOpenSession) { src ->
+                                            vm.confirm(context, s.id, src)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HistoryGroup.RUNS -> ui.view.runSections.forEach { section ->
+                        val day = section.day
+                        val sourceId = section.sourceId
+                        when {
+                            day != null -> stickyHeader(key = "d-$day") { DayHeader(day, section.totals, today) }
+                            sourceId != null -> stickyHeader(key = "s-$sourceId") { SourceHeader(ui.sources[sourceId], section.totals) }
+                        }
+                        section.runs.forEach { run ->
+                            val open = run.id in expandedRuns
+                            // A lone piece opens straight to detail unless it needs its Confirm button.
+                            val expandable = run.pieces > 1 || run.sessions.any { needsConfirmation(it, ui.sources[it.sourceId]) }
+                            item(key = "r-${run.id}") {
+                                val live = ui.live?.takeIf { l -> run.openSession?.id == l.sessionId }?.levelPct
+                                RunRow(
+                                    run = run,
+                                    source = ui.sources[run.sourceId],
+                                    showDate = flat,
+                                    emphasis = emphasis,
+                                    liveLevel = live,
+                                    expanded = open,
+                                    onClick = {
+                                        if (!expandable) {
+                                            onOpenSession(run.id)
+                                        } else {
+                                            expandedRuns = if (open) expandedRuns - run.id else expandedRuns + run.id
+                                        }
+                                    },
+                                )
+                                HorizontalDivider(Modifier.padding(start = Space.xl), color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+                            if (open && expandable) {
+                                items(run.sessions, key = { "p-${it.id}" }) { s ->
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                            .padding(start = Space.l),
+                                    ) {
+                                        SessionItem(s, ui, showDate = false, emphasis = emphasis, onOpenSession = onOpenSession) { src ->
+                                            vm.confirm(context, s.id, src)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!ui.view.isEmpty && ui.view.hiddenShort > 0) {
+                    item(key = "hidden-footer") {
+                        TextButton(
+                            onClick = { change { vm.setHideShort(false) } },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = Space.l, vertical = Space.s),
+                        ) { Text("Show ${ui.view.hiddenShort} short sessions") }
                     }
                 }
             }
@@ -211,6 +285,7 @@ fun HistoryScreen(
 private fun Controls(
     ui: HistoryUi,
     onSort: (HistorySort) -> Unit,
+    onGroup: (HistoryGroup) -> Unit,
     onSource: (Long?) -> Unit,
     onRange: (HistoryRange) -> Unit,
     onHideShort: (Boolean) -> Unit,
@@ -238,6 +313,14 @@ private fun Controls(
                 description = "Sort order",
             )
             MenuButton(
+                label = filter.group.label,
+                options = HistoryGroup.entries,
+                selected = filter.group,
+                optionLabel = { it.label },
+                onSelect = onGroup,
+                description = "Group by",
+            )
+            MenuButton(
                 label = filter.range.label,
                 options = HistoryRange.entries,
                 selected = filter.range,
@@ -256,7 +339,7 @@ private fun Controls(
                 },
             )
         }
-        if (ui.view.sections.isNotEmpty()) {
+        if (!ui.view.isEmpty) {
             val hidden = ui.view.hiddenShort
             Text(
                 HistoryText.summary(ui.view.totals) + if (hidden > 0) " · $hidden short hidden" else "",
@@ -265,6 +348,31 @@ private fun Controls(
                 modifier = Modifier.padding(horizontal = Space.l, vertical = Space.xs),
             )
         }
+    }
+}
+
+/** A session row with its divider; still opens session detail. */
+@Composable
+private fun SessionItem(
+    s: ChargeSession,
+    ui: HistoryUi,
+    showDate: Boolean,
+    emphasis: RowEmphasis,
+    onOpenSession: (Long) -> Unit,
+    onConfirm: (PowerSource) -> Unit,
+) {
+    val source = ui.sources[s.sourceId]
+    Column {
+        SessionRow(
+            s = s,
+            source = source,
+            showDate = showDate,
+            emphasis = emphasis,
+            liveLevel = ui.live?.takeIf { it.sessionId == s.id && s.isOpen }?.levelPct,
+            onClick = { onOpenSession(s.id) },
+            onConfirm = { source?.let(onConfirm) },
+        )
+        HorizontalDivider(Modifier.padding(start = Space.xl), color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 

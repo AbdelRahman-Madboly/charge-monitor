@@ -1,6 +1,7 @@
 package com.vinex.chargemonitor.ui.history
 
 import com.vinex.chargemonitor.data.ChargeSession
+import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.ui.Format
 import java.time.Instant
 import java.time.LocalDate
@@ -33,6 +34,7 @@ enum class HistoryRange(val label: String, val days: Long?) {
  */
 data class HistoryFilter(
     val sort: HistorySort = HistorySort.NEWEST,
+    val group: HistoryGroup = HistoryGroup.RUNS,
     /** Show only this source; null shows every source. */
     val sourceId: Long? = null,
     val range: HistoryRange = HistoryRange.ALL,
@@ -43,7 +45,12 @@ data class HistoryFilter(
 }
 
 /** Totals of a set of sessions: what the summary line and each section header show. */
-data class HistoryTotals(val count: Int = 0, val wh: Double = 0.0, val levelAdded: Double = 0.0) {
+data class HistoryTotals(
+    val count: Int = 0,
+    val wh: Double = 0.0,
+    val levelAdded: Double = 0.0,
+    val mah: Double = 0.0,
+) {
     /** Percentage points added over 100: how many times a full 0 to 100 % charge that was. */
     val phoneCharges: Double get() = levelAdded / 100.0
 
@@ -53,6 +60,7 @@ data class HistoryTotals(val count: Int = 0, val wh: Double = 0.0, val levelAdde
             // A session that drained counts as nothing added, same as levelAdded.
             wh = sessions.sumOf { it.whIn.coerceAtLeast(0.0) },
             levelAdded = sessions.sumOf { it.levelAdded.toDouble() },
+            mah = sessions.sumOf { HistoryQuery.mahOf(it) },
         )
     }
 }
@@ -69,13 +77,21 @@ data class HistorySection(
     val totals: HistoryTotals = HistoryTotals.of(sessions)
 }
 
+/**
+ * What the list shows. Only the field for the chosen [HistoryGroup] is filled: [sections] for
+ * dates, [kinds] for source types, [runSections] for charge runs.
+ */
 data class HistoryView(
     val sections: List<HistorySection>,
     /** Totals of everything shown, across all sections. */
     val totals: HistoryTotals,
     /** Sessions matching the source and date filters that were left out only for being short. */
     val hiddenShort: Int,
-)
+    val kinds: List<KindSection> = emptyList(),
+    val runSections: List<RunSection> = emptyList(),
+) {
+    val isEmpty: Boolean get() = sections.isEmpty() && kinds.isEmpty() && runSections.isEmpty()
+}
 
 object HistoryQuery {
     /** Anything plugged for less than this is a connector wiggle, not a charge. */
@@ -86,6 +102,9 @@ object HistoryQuery {
 
     /** A long session at a charge limit adds no level but can still move real energy; keep those. */
     const val SHORT_ENERGY_WH = 0.5
+
+    /** Charge in, preferring the charge counter; a drain counts as nothing, same as levelAdded. */
+    fun mahOf(s: ChargeSession): Double = (s.counterMahIn ?: s.mahIn).coerceAtLeast(0.0)
 
     fun durationMs(s: ChargeSession): Long = ((s.endMs ?: s.updatedMs) - s.startMs).coerceAtLeast(0L)
 
@@ -109,19 +128,33 @@ object HistoryQuery {
     /**
      * Filters, orders and groups [sessions] for display.
      *
-     * [sourceName] resolves a source id for the source order; ties in every order fall back to
-     * newest first so the list never shuffles between recompositions.
+     * [sourceName] resolves a source id for the source order and [sourceKind] its kind for the
+     * source type grouping; ties in every order fall back to newest first so the list never
+     * shuffles between recompositions. In charge runs mode short is judged per run.
      */
     fun apply(
         sessions: List<ChargeSession>,
         filter: HistoryFilter,
         zone: ZoneId,
         nowMs: Long,
+        sourceKind: (Long) -> SourceKind? = { null },
         sourceName: (Long) -> String = { "" },
     ): HistoryView {
         val from = rangeStartMs(filter.range, zone, nowMs)
         val matching = sessions.filter { s ->
             (filter.sourceId == null || s.sourceId == filter.sourceId) && (from == null || s.startMs >= from)
+        }
+        if (filter.group == HistoryGroup.RUNS) {
+            val all = HistoryGrouping.runs(matching)
+            val kept = if (filter.hideShort) all.filterNot(HistoryGrouping::isShort) else all
+            val ordered = HistoryGrouping.sortRuns(kept, filter.sort, sourceName)
+            val shownSessions = ordered.flatMap { it.sessions }
+            return HistoryView(
+                sections = emptyList(),
+                totals = HistoryTotals.of(shownSessions),
+                hiddenShort = matching.size - shownSessions.size,
+                runSections = HistoryGrouping.runSections(ordered, filter.sort, zone),
+            )
         }
         val shown = if (filter.hideShort) matching.filterNot(::isShort) else matching
         val hiddenShort = matching.size - shown.size
@@ -135,6 +168,15 @@ object HistoryQuery {
             HistorySort.LONGEST -> shown.sortedWith(compareByDescending<ChargeSession> { durationMs(it) }.then(newestFirst))
             HistorySort.BY_SOURCE -> shown.sortedWith(
                 compareBy<ChargeSession> { sourceName(it.sourceId).lowercase() }.thenBy { it.sourceId }.then(newestFirst),
+            )
+        }
+
+        if (filter.group == HistoryGroup.SOURCE_TYPE) {
+            return HistoryView(
+                sections = emptyList(),
+                totals = HistoryTotals.of(ordered),
+                hiddenShort = hiddenShort,
+                kinds = HistoryGrouping.byKind(ordered, filter.sort, sourceKind, sourceName),
             )
         }
 
@@ -183,8 +225,36 @@ object HistoryText {
     /** Level added over 100: "1.26 phone charges". */
     fun phoneCharges(t: HistoryTotals): String = "${Format.f(t.phoneCharges, 2)} phone charges"
 
-    /** "3 sessions · 12.3 Wh · 1.26 phone charges". */
-    fun summary(t: HistoryTotals): String = "${sessions(t.count)} · ${Format.wh(t.wh)} Wh · ${phoneCharges(t)}"
+    /** "3 sessions · 4,210 mAh · 12.3 Wh · 1.26 phone charges". */
+    fun summary(t: HistoryTotals): String =
+        "${sessions(t.count)} · ${Format.mah(t.mah)} mAh · ${Format.wh(t.wh)} Wh · ${phoneCharges(t)}"
+
+    /** Source type and source headers, which sit on a line of their own: "3 sessions · 12.3 Wh · 4,210 mAh · 1.26 charges". */
+    fun groupHeader(t: HistoryTotals): String =
+        "${sessions(t.count)} · ${Format.wh(t.wh)} Wh · ${Format.mah(t.mah)} mAh · ${Format.f(t.phoneCharges, 2)} charges"
+
+    /** "10:02 → 13:40", with the day on either end when asked or when the run crosses midnight. */
+    fun runTimes(run: ChargeRun, showDate: Boolean, zone: ZoneId = ZoneId.systemDefault()): String {
+        val start = Format.clock(run.startMs, zone)
+        if (run.isOpen) return (if (showDate) "${Format.shortDay(run.startMs, zone)} · " else "") + "$start → now"
+        val sameDay = Format.shortDay(run.startMs, zone) == Format.shortDay(run.endMs, zone)
+        val end = Format.clock(run.endMs, zone)
+        return when {
+            !sameDay -> "${Format.shortDay(run.startMs, zone)} · $start → ${Format.shortDay(run.endMs, zone)} · $end"
+            showDate -> "${Format.shortDay(run.startMs, zone)} · $start → $end"
+            else -> "$start → $end"
+        }
+    }
+
+    fun pieces(n: Int): String = if (n == 1) "1 piece" else "$n pieces"
+
+    fun kindTitle(kind: SourceKind?): String = when (kind) {
+        SourceKind.POWER_BANK -> "Power banks"
+        SourceKind.CHARGER -> "Chargers"
+        SourceKind.LAPTOP -> "Laptop"
+        SourceKind.WIRELESS -> "Wireless"
+        null -> "Other"
+    }
 
     /** Shorter form for section headers, which share the line with a date: "3 sessions · 12.3 Wh · 1.26 charges". */
     fun header(t: HistoryTotals): String = "${sessions(t.count)} · ${Format.wh(t.wh)} Wh · ${Format.f(t.phoneCharges, 2)} charges"

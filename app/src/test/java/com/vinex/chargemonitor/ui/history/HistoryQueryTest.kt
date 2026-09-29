@@ -25,6 +25,7 @@ class HistoryQueryTest {
         to: Float? = 80f,
         wh: Double = 10.0,
         open: Boolean = false,
+        mah: Double = 0.0,
     ) = ChargeSession(
         id = id,
         sourceId = source,
@@ -35,6 +36,7 @@ class HistoryQueryTest {
         startLevel = from,
         endLevel = to,
         whIn = wh,
+        mahIn = mah,
     )
 
     private fun run(sessions: List<ChargeSession>, filter: HistoryFilter) =
@@ -62,11 +64,11 @@ class HistoryQueryTest {
     @Test
     fun hideShortDropsNoiseAndCountsIt() {
         val all = noise + session(1, at(29, 10))
-        val hidden = run(all, HistoryFilter())
+        val hidden = run(all, HistoryFilter(group = HistoryGroup.DATE))
         assertEquals(listOf(1L), ids(hidden))
         assertEquals(2, hidden.hiddenShort)
 
-        val shown = run(all, HistoryFilter(hideShort = false))
+        val shown = run(all, HistoryFilter(group = HistoryGroup.DATE, hideShort = false))
         assertEquals(3, ids(shown).size)
         assertEquals(0, shown.hiddenShort)
     }
@@ -75,7 +77,7 @@ class HistoryQueryTest {
     fun newestGroupsByDayNewestFirst() {
         val view = run(
             listOf(session(1, at(26, 8)), session(2, at(27, 9)), session(3, at(27, 21))),
-            HistoryFilter(),
+            HistoryFilter(group = HistoryGroup.DATE),
         )
         assertEquals(listOf(LocalDate.of(2026, 9, 27), LocalDate.of(2026, 9, 26)), view.sections.map { it.day })
         assertEquals(listOf(3L, 2L, 1L), ids(view))
@@ -85,7 +87,7 @@ class HistoryQueryTest {
     fun oldestReversesDaysAndRows() {
         val view = run(
             listOf(session(1, at(26, 8)), session(2, at(27, 9)), session(3, at(27, 21))),
-            HistoryFilter(sort = HistorySort.OLDEST),
+            HistoryFilter(group = HistoryGroup.DATE, sort = HistorySort.OLDEST),
         )
         assertEquals(listOf(LocalDate.of(2026, 9, 26), LocalDate.of(2026, 9, 27)), view.sections.map { it.day })
         assertEquals(listOf(1L, 2L, 3L), ids(view))
@@ -98,18 +100,18 @@ class HistoryQueryTest {
             session(2, at(27, 9), from = 10f, to = 90f, wh = 5.0, minutes = 90),
             session(3, at(28, 9), from = 50f, to = 60f, wh = 12.0, minutes = 200),
         )
-        val added = run(list, HistoryFilter(sort = HistorySort.MOST_ADDED))
+        val added = run(list, HistoryFilter(group = HistoryGroup.DATE, sort = HistorySort.MOST_ADDED))
         assertEquals(1, added.sections.size)
         assertNull(added.sections[0].day)
         assertEquals(listOf(2L, 1L, 3L), ids(added))
-        assertEquals(listOf(1L, 3L, 2L), ids(run(list, HistoryFilter(sort = HistorySort.MOST_ENERGY))))
-        assertEquals(listOf(3L, 2L, 1L), ids(run(list, HistoryFilter(sort = HistorySort.LONGEST))))
+        assertEquals(listOf(1L, 3L, 2L), ids(run(list, HistoryFilter(group = HistoryGroup.DATE, sort = HistorySort.MOST_ENERGY))))
+        assertEquals(listOf(3L, 2L, 1L), ids(run(list, HistoryFilter(group = HistoryGroup.DATE, sort = HistorySort.LONGEST))))
     }
 
     @Test
     fun tiesFallBackToNewestFirst() {
         val list = listOf(session(1, at(26, 8)), session(2, at(28, 8)), session(3, at(27, 8)))
-        assertEquals(listOf(2L, 3L, 1L), ids(run(list, HistoryFilter(sort = HistorySort.MOST_ADDED))))
+        assertEquals(listOf(2L, 3L, 1L), ids(run(list, HistoryFilter(group = HistoryGroup.DATE, sort = HistorySort.MOST_ADDED))))
     }
 
     @Test
@@ -120,7 +122,7 @@ class HistoryQueryTest {
             session(3, at(28, 8), source = 1),
             session(4, at(25, 8), source = 2),
         )
-        val view = run(list, HistoryFilter(sort = HistorySort.BY_SOURCE))
+        val view = run(list, HistoryFilter(group = HistoryGroup.DATE, sort = HistorySort.BY_SOURCE))
         assertEquals(listOf(5L, 1L, 2L), view.sections.map { it.sourceId })
         assertEquals(listOf(2L, 3L, 1L, 4L), ids(view))
     }
@@ -128,35 +130,36 @@ class HistoryQueryTest {
     @Test
     fun sourceFilterKeepsOnlyThatSource() {
         val list = listOf(session(1, at(26, 8), source = 1), session(2, at(27, 8), source = 5))
-        assertEquals(listOf(2L), ids(run(list, HistoryFilter(sourceId = 5))))
+        assertEquals(listOf(2L), ids(run(list, HistoryFilter(group = HistoryGroup.DATE, sourceId = 5))))
     }
 
     @Test
     fun rangeCountsWholeDaysEndingToday() {
         val list = listOf(session(1, at(24, 0)), session(2, at(23, 23)), session(3, at(1, 8)))
         // Seven days ending on the 30th start at midnight on the 24th.
-        assertEquals(listOf(1L), ids(run(list, HistoryFilter(range = HistoryRange.WEEK))))
-        assertEquals(listOf(1L, 2L, 3L), ids(run(list, HistoryFilter(range = HistoryRange.MONTH))))
+        assertEquals(listOf(1L), ids(run(list, HistoryFilter(group = HistoryGroup.DATE, range = HistoryRange.WEEK))))
+        assertEquals(listOf(1L, 2L, 3L), ids(run(list, HistoryFilter(group = HistoryGroup.DATE, range = HistoryRange.MONTH))))
     }
 
     @Test
     fun totalsSumShownSessionsAndIgnoreDrain() {
         val list = listOf(
-            session(1, at(29, 8), from = 20f, to = 80f, wh = 12.0),
-            session(2, at(29, 10), from = 30f, to = 96f, wh = 13.5),
-            session(3, at(29, 12), from = 60f, to = 55f, wh = -0.5, minutes = 30),
+            session(1, at(29, 8), from = 20f, to = 80f, wh = 12.0, mah = 3000.0),
+            session(2, at(29, 10), from = 30f, to = 96f, wh = 13.5, mah = 3210.0),
+            session(3, at(29, 12), from = 60f, to = 55f, wh = -0.5, minutes = 30, mah = -120.0),
         )
-        val t = run(list, HistoryFilter(hideShort = false)).totals
+        val t = run(list, HistoryFilter(group = HistoryGroup.DATE, hideShort = false)).totals
         assertEquals(3, t.count)
         assertEquals(25.5, t.wh, 1e-9)
         assertEquals(126.0, t.levelAdded, 1e-4)
         assertEquals(1.26, t.phoneCharges, 1e-6)
-        assertEquals("3 sessions · 25.5 Wh · 1.26 phone charges", HistoryText.summary(t))
+        assertEquals(6210.0, t.mah, 1e-9)
+        assertEquals("3 sessions · 6,210 mAh · 25.5 Wh · 1.26 phone charges", HistoryText.summary(t))
     }
 
     @Test
     fun emptyResultHasNoSections() {
-        val view = run(noise, HistoryFilter())
+        val view = run(noise, HistoryFilter(group = HistoryGroup.DATE))
         assertTrue(view.sections.isEmpty())
         assertEquals(0, view.totals.count)
         assertEquals(2, view.hiddenShort)
