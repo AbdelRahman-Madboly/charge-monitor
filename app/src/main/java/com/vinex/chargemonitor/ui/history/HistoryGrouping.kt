@@ -81,27 +81,38 @@ object HistoryGrouping {
 
     /**
      * Merges [sessions] into runs, in start order. A session joins the run before it when it is
-     * from the same source and started at most [gapMs] after that run's latest end. Any session
+     * from the same source and started at most [gapMs] after that run's latest end. A real session
      * from another source in between ends the run, since the phone was on another charger then.
+     * A short blip from another source (a replug the source guess got wrong) does not: it becomes
+     * a run of its own and the charge around it stays whole.
      */
     fun runs(sessions: List<ChargeSession>, gapMs: Long = RUN_GAP_MS): List<ChargeRun> {
         val ordered = sessions.sortedWith(compareBy<ChargeSession> { it.startMs }.thenBy { it.id })
         val out = ArrayList<ChargeRun>()
+        val blips = ArrayList<ChargeSession>()
         var current = ArrayList<ChargeSession>()
         var currentEnd = Long.MIN_VALUE
         for (s in ordered) {
             val prev = current.lastOrNull()
-            val joins = prev != null && prev.sourceId == s.sourceId && !prev.isOpen && s.startMs - currentEnd <= gapMs
+            val inGap = prev != null && !prev.isOpen && s.startMs - currentEnd <= gapMs
+            if (inGap && prev!!.sourceId != s.sourceId && HistoryQuery.isShort(s)) {
+                blips += s
+                continue
+            }
+            val joins = inGap && prev!!.sourceId == s.sourceId
             if (!joins && current.isNotEmpty()) {
                 out += ChargeRun(current)
                 current = ArrayList()
                 currentEnd = Long.MIN_VALUE
             }
+            blips.forEach { out += ChargeRun(listOf(it)) }
+            blips.clear()
             current += s
             currentEnd = maxOf(currentEnd, s.endMs ?: s.updatedMs)
         }
         if (current.isNotEmpty()) out += ChargeRun(current)
-        return out
+        blips.forEach { out += ChargeRun(listOf(it)) }
+        return out.sortedWith(compareBy<ChargeRun> { it.startMs }.thenBy { it.id })
     }
 
     /** Short means the whole run is noise; a blip next to a real charge rides along with it. */

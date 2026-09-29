@@ -341,7 +341,7 @@ enum class DashboardTab(val label: String, val defaultSort: DashboardSort, val s
 }
 
 enum class DashboardSort(val label: String) {
-    DELIVERED_MAH("Delivered mAh (incl. phone use)"),
+    DELIVERED_MAH("Delivered mAh"),
     PHONE_CHARGES("Phone charges"),
     PER_FULL_BANK("Per full bank"),
     REAL_CAPACITY("Real capacity"),

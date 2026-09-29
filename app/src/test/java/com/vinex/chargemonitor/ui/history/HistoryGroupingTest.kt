@@ -270,4 +270,22 @@ class HistoryGroupingTest {
             HistoryText.groupHeader(HistoryTotals.of(listOf(session(1, at(29, 8)), session(2, at(29, 10))))),
         )
     }
+
+    @Test
+    fun `a short blip from another source does not split a run`() {
+        val a = session(1, at(29, 22, 36), source = 2, minutes = 15, from = 44f, to = 50f)
+        val blip = session(2, at(29, 22, 51), source = 6, minutes = 0, from = 50f, to = 50f, wh = 0.0, mah = 0.0)
+        val b = session(3, at(29, 22, 51) + 10_000, source = 2, minutes = 36, from = 50f, to = 68f)
+        val runs = HistoryGrouping.runs(listOf(a, blip, b))
+        assertEquals(listOf(listOf(1L, 3L), listOf(2L)), runs.map { r -> r.sessions.map { it.id } })
+    }
+
+    @Test
+    fun `a real session from another source still splits a run`() {
+        val a = session(1, at(29, 10), source = 2, minutes = 15)
+        val other = session(2, at(29, 10, 20), source = 6, minutes = 20)
+        val b = session(3, at(29, 10, 45), source = 2, minutes = 15)
+        val runs = HistoryGrouping.runs(listOf(a, other, b))
+        assertEquals(listOf(listOf(1L), listOf(2L), listOf(3L)), runs.map { r -> r.sessions.map { it.id } })
+    }
 }
