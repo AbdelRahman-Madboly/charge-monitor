@@ -38,6 +38,17 @@ internal fun DashboardInfoSheet(onDismiss: () -> Unit) {
                 "Every percent a source has added, summed and divided by 100. Partial charges add up.",
             )
             Point(
+                "Delivered to phone",
+                "The app measures charge going into the battery. With the screen on, the bank also runs the " +
+                    "phone, so that share is added as an estimate. Below 80 % the charge current is steady, " +
+                    "so the phone's load is the median current with the screen off minus the median with it " +
+                    "on, in the same session. A session with too little of either (for example screen on the " +
+                    "whole time) uses the median load from your other sessions. The load is multiplied by the " +
+                    "time the screen was on. Use with the screen off is not counted, so the total is a lower " +
+                    "bound. Phone charges marked incl. phone use add this share, counted against the phone's " +
+                    "design capacity.",
+            )
+            Point(
                 "Per full bank",
                 "How many full phone charges one full bank gives: the median, over marked drains, of the " +
                     "percent added between Recharged and the next Ran empty. The bar compares it with what " +
@@ -50,7 +61,9 @@ internal fun DashboardInfoSheet(onDismiss: () -> Unit) {
             )
             Point(
                 "Comparing banks",
-                "Sort by Per full bank or Real capacity to rank banks. These use Wh, not mAh: a mAh label only " +
+                "Banks are ranked by mAh delivered to the phone, including use while charging, so a bank " +
+                    "used with the screen on is not ranked below one charged idle. Sort by Per full bank or " +
+                    "Real capacity to rank banks by capacity. These use Wh, not mAh: a mAh label only " +
                     "compares with another rated at the same cell voltage.",
             )
             Point(

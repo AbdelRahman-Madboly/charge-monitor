@@ -143,8 +143,14 @@ fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = view
 @Composable
 private fun Summary(summary: DashboardSummary) {
     Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-        StatTile("Phone charges", Format.fullCharges(summary.fullCharges), "", Modifier.weight(1f),
-            accent = MaterialTheme.colorScheme.primary)
+        val fair = summary.fairFullCharges
+        StatTile(
+            if (fair != null) "Phone charges (incl. use)" else "Phone charges",
+            Format.fullCharges(fair ?: summary.fullCharges),
+            "",
+            Modifier.weight(1f),
+            accent = MaterialTheme.colorScheme.primary,
+        )
         StatTile("Energy, Wh", Format.wh(summary.whIn), "", Modifier.weight(1f))
         StatTile("Sessions", summary.sessions.toString(), "", Modifier.weight(1f))
     }

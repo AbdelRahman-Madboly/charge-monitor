@@ -10,13 +10,22 @@ import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.Repository
 import com.vinex.chargemonitor.data.SettingsStore
 import com.vinex.chargemonitor.data.SourceKind
+import com.vinex.chargemonitor.stats.PhoneLoad
 import com.vinex.chargemonitor.stats.StatsCalculator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /** Everything one source's card shows. */
 data class SourceCard(
@@ -42,6 +51,16 @@ data class SourceCard(
     val charger: StatsCalculator.ChargerStats? = null,
     /** End of the source's most recent closed session; null without any. */
     val lastUsedMs: Long? = null,
+    /**
+     * mAh the source gave the phone over the sessions [fullCharges] counts: into the battery plus
+     * the estimated use while the screen was on. Null until the samples have loaded.
+     */
+    val delivery: PhoneLoad.Delivery? = null,
+    /**
+     * [fullCharges] plus the phone's use in phone-battery (design) units; null without a design
+     * capacity or any phone use to add.
+     */
+    val fairPhoneCharges: Double? = null,
 )
 
 /** Totals over every closed, non-mock session, for the summary strip. */
@@ -49,6 +68,8 @@ data class DashboardSummary(
     val sessions: Int = 0,
     val whIn: Double = 0.0,
     val fullCharges: Double = 0.0,
+    /** [fullCharges] including phone use while charging; null when it cannot be worked out. */
+    val fairFullCharges: Double? = null,
 )
 
 data class DashboardUi(
@@ -65,7 +86,7 @@ data class DashboardUi(
     val tab: DashboardTab = DashboardTab.BANKS,
     /** Tabs that have at least one card, in display order. */
     val tabs: List<DashboardTab> = emptyList(),
-    val sort: DashboardSort = DashboardSort.PHONE_CHARGES,
+    val sort: DashboardSort = DashboardSort.DELIVERED_MAH,
     /** Cards of [tab], ordered by [sort]. */
     val tabCards: List<SourceCard> = emptyList(),
     val loaded: Boolean = false,
@@ -82,16 +103,45 @@ class DashboardViewModel(
     private val tab = MutableStateFlow<DashboardTab?>(null)
     private val sorts = MutableStateFlow(DashboardTab.entries.associateWith { it.defaultSort })
 
+    /** Closed sessions never change, so their sample profiles are read once; keyed by id. */
+    private val profileCache = ConcurrentHashMap<Long, CachedProfile>()
+
+    private data class CachedProfile(val endMs: Long?, val sampleCount: Int, val profile: PhoneLoad.Profile)
+
+    /**
+     * Phone-load profiles of every closed, non-mock session, read off the main thread. A session
+     * that reopens and closes again (reconnect grace) changes end and sample count, so it is re-read.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val profiles: Flow<Map<Long, PhoneLoad.Profile>> = repository.observeSessions()
+        .mapLatest { sessions ->
+            withContext(Dispatchers.IO) {
+                val closed = sessions.filter { !it.isOpen && !it.mock }
+                closed.forEach { s ->
+                    val hit = profileCache[s.id]
+                    if (hit == null || hit.endMs != s.endMs || hit.sampleCount != s.sampleCount) {
+                        profileCache[s.id] = CachedProfile(s.endMs, s.sampleCount, PhoneLoad.profile(s, repository.samples(s.id)))
+                    }
+                }
+                closed.mapNotNull { s -> profileCache[s.id]?.let { s.id to it.profile } }.toMap()
+            }
+        }
+        .onStart { emit(emptyMap()) }
+        .distinctUntilChanged()
+
     val ui: StateFlow<DashboardUi> = combine(
         repository.observeSources(),
         repository.observeSessions(),
         combine(filter, tab, sorts) { f, t, s -> Triple(f, t, s) },
-        settings.includeUsedWhileCharging.flow,
+        combine(
+            settings.includeUsedWhileCharging.flow,
+            profiles,
+        ) { i, p -> i to p },
         combine(settings.lossFactor.flow, settings.designCapacityMah.flow, repository.observeBankEvents()) { l, d, e ->
             Triple(l, d, e)
         },
-    ) { sources, sessions, (selected, pickedTab, sortByTab), includeUsed, (loss, design, events) ->
-        build(sources, sessions, selected, includeUsed, loss, design, events).let { ui ->
+    ) { sources, sessions, (selected, pickedTab, sortByTab), (includeUsed, profileMap), (loss, design, events) ->
+        build(sources, sessions, selected, includeUsed, loss, design, events, profileMap).let { ui ->
             val tabs = DashboardTab.entries.filter { t -> ui.cards.any { t.admits(it.source.kind) } }
             val shownTab = pickedTab?.takeIf { it in tabs } ?: tabs.firstOrNull() ?: DashboardTab.BANKS
             val sort = sortByTab[shownTab] ?: shownTab.defaultSort
@@ -136,8 +186,14 @@ class DashboardViewModel(
         loss: Float,
         design: Int,
         events: List<BankEvent>,
+        profiles: Map<Long, PhoneLoad.Profile>,
     ): DashboardUi {
         val closed = sessions.filter { !it.isOpen && !it.mock }
+        // The phone's own load is the same whatever feeds it, so the typical comes from every source.
+        val typicalLoad = PhoneLoad.typicalLoad(closed.mapNotNull { profiles[it.id]?.measuredLoadMa })
+        val designMah = design.takeIf { it > 0 }
+        fun deliveryOf(group: List<ChargeSession>) =
+            if (profiles.isEmpty() || group.isEmpty()) null else PhoneLoad.delivery(group, profiles, typicalLoad)
         val bySource = closed.groupBy { it.sourceId }
         // A selected source that has since been archived stays selectable until the filter changes.
         val filter = selected?.takeIf { id -> sources.any { it.id == id } }
@@ -152,9 +208,11 @@ class DashboardViewModel(
             val own = if (isBank) all.filter { it.sourceConfirmed } else all
             val unconfirmed = if (isBank) all.filterNot { it.sourceConfirmed } else emptyList()
             val admitted = own.filter { includeUsed || !it.usedWhileCharging }
+            val fullCharges = StatsCalculator.fullChargeEquivalents(own)
+            val delivery = deliveryOf(own)
             SourceCard(
                 source = s,
-                fullCharges = StatsCalculator.fullChargeEquivalents(own),
+                fullCharges = fullCharges,
                 whIn = own.sumOf { it.whIn },
                 sessionCount = own.size,
                 avgW = admitted.takeIf { it.isNotEmpty() }?.map { it.avgW }?.average(),
@@ -178,6 +236,8 @@ class DashboardViewModel(
                     null
                 },
                 lastUsedMs = all.maxOfOrNull { it.endMs ?: it.startMs },
+                delivery = delivery,
+                fairPhoneCharges = fairCharges(fullCharges, delivery, designMah),
             )
         }
 
@@ -187,6 +247,7 @@ class DashboardViewModel(
             .filter { it.sourceConfirmed || kindOf[it.sourceId] != SourceKind.POWER_BANK }
             .sortedBy { it.startMs }
 
+        val allCharges = StatsCalculator.fullChargeEquivalents(closed)
         return DashboardUi(
             sources = sources,
             filter = filter,
@@ -198,13 +259,26 @@ class DashboardViewModel(
             summary = DashboardSummary(
                 sessions = closed.size,
                 whIn = closed.sumOf { it.whIn },
-                fullCharges = StatsCalculator.fullChargeEquivalents(closed),
+                fullCharges = allCharges,
+                fairFullCharges = fairCharges(allCharges, deliveryOf(closed), designMah),
             ),
             loaded = true,
         )
     }
 
     companion object {
+        /**
+         * Phone charges including use while charging: the measured charges (percent added / 100)
+         * plus the estimated phone use expressed in design-capacity phone batteries. Built on the
+         * percent figure rather than mAh / design so a worn battery never makes it read lower than
+         * the plain figure. Null without a design capacity or any phone use to add.
+         */
+        fun fairCharges(fullCharges: Double, delivery: PhoneLoad.Delivery?, designMah: Int?): Double? {
+            val use = delivery?.phoneUseMah?.takeIf { it > 0.0 } ?: return null
+            val design = designMah?.takeIf { it > 0 } ?: return null
+            return fullCharges + use / design
+        }
+
         /**
          * [cards] ordered by [sort]: biggest first for figures, A to Z for names, newest first
          * for last used. Cards without the figure go last; ties fall back to the name.
@@ -214,6 +288,7 @@ class DashboardViewModel(
             if (sort == DashboardSort.NAME) return cards.sortedWith(byName)
             val key: (SourceCard) -> Double? = when (sort) {
                 DashboardSort.PHONE_CHARGES -> { c -> c.fullCharges }
+                DashboardSort.DELIVERED_MAH -> { c -> c.delivery?.deliveredMah?.takeIf { it > 0.0 } }
                 DashboardSort.PER_FULL_BANK -> { c -> c.capacity?.cyclePhoneCharges ?: c.labelPhoneCharges }
                 DashboardSort.REAL_CAPACITY -> { c -> c.capacity?.ratioOfRated }
                 DashboardSort.PEAK_POWER -> { c -> c.charger?.peakW }
@@ -236,9 +311,9 @@ class DashboardViewModel(
 enum class DashboardTab(val label: String, val defaultSort: DashboardSort, val sorts: List<DashboardSort>) {
     BANKS(
         "Power banks",
-        DashboardSort.PHONE_CHARGES,
+        DashboardSort.DELIVERED_MAH,
         listOf(
-            DashboardSort.PHONE_CHARGES, DashboardSort.PER_FULL_BANK, DashboardSort.REAL_CAPACITY,
+            DashboardSort.DELIVERED_MAH, DashboardSort.PHONE_CHARGES, DashboardSort.PER_FULL_BANK, DashboardSort.REAL_CAPACITY,
             DashboardSort.ENERGY, DashboardSort.AVG_POWER, DashboardSort.LAST_USED, DashboardSort.NAME,
         ),
     ),
@@ -247,6 +322,7 @@ enum class DashboardTab(val label: String, val defaultSort: DashboardSort, val s
         DashboardSort.PEAK_POWER,
         listOf(
             DashboardSort.PEAK_POWER, DashboardSort.AVG_POWER, DashboardSort.SPEED, DashboardSort.PHONE_CHARGES,
+            DashboardSort.DELIVERED_MAH,
             DashboardSort.ENERGY, DashboardSort.LAST_USED, DashboardSort.NAME,
         ),
     ),
@@ -265,6 +341,7 @@ enum class DashboardTab(val label: String, val defaultSort: DashboardSort, val s
 }
 
 enum class DashboardSort(val label: String) {
+    DELIVERED_MAH("Delivered mAh (incl. phone use)"),
     PHONE_CHARGES("Phone charges"),
     PER_FULL_BANK("Per full bank"),
     REAL_CAPACITY("Real capacity"),
