@@ -2,8 +2,10 @@ package com.vinex.chargemonitor.ui.dashboard
 
 import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.SourceKind
+import com.vinex.chargemonitor.stats.PhoneLoad
 import com.vinex.chargemonitor.stats.StatsCalculator
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,6 +21,8 @@ class DashboardSortTest {
         peakW: Double? = null,
         avgW: Double? = null,
         kind: SourceKind = SourceKind.POWER_BANK,
+        into: Double? = null,
+        use: Double = 0.0,
     ) = SourceCard(
         source = PowerSource(name = name, kind = kind, colorArgb = 0),
         fullCharges = fullCharges,
@@ -30,6 +34,18 @@ class DashboardSortTest {
         labelPhoneCharges = label,
         charger = peakW?.let { StatsCalculator.ChargerStats(it, null, null, 0) },
         lastUsedMs = lastUsed,
+        delivery = into?.let { delivery(it, use) },
+    )
+
+    private fun delivery(into: Double, use: Double) = PhoneLoad.Delivery(
+        intoBatteryMah = into,
+        phoneUseMah = use,
+        measuredSessions = 1,
+        typicalSessions = 0,
+        unknownSessions = 0,
+        screenOnMs = 0,
+        coveredMs = 0,
+        typicalLoadMa = null,
     )
 
     private fun names(cards: List<SourceCard>) = cards.map { it.source.name }
@@ -86,6 +102,31 @@ class DashboardSortTest {
             DashboardSort.AVG_POWER,
         )
         assertEquals(listOf("fast", "slow", "zero"), names(sorted))
+    }
+
+    @Test
+    fun banksDefaultToDeliveredMah() {
+        assertEquals(DashboardSort.DELIVERED_MAH, DashboardTab.BANKS.defaultSort)
+        assertEquals(DashboardSort.DELIVERED_MAH, DashboardUi().sort)
+    }
+
+    @Test
+    fun deliveredMahCountsPhoneUseAndUnloadedGoesLast() {
+        // "idle" put more into the battery, but "used" delivered more once phone use is added.
+        val sorted = DashboardViewModel.sortCards(
+            listOf(card("idle", into = 5_000.0), card("loading"), card("used", into = 4_500.0, use = 1_000.0)),
+            DashboardSort.DELIVERED_MAH,
+        )
+        assertEquals(listOf("used", "idle", "loading"), names(sorted))
+    }
+
+    @Test
+    fun fairChargesAddPhoneUseInDesignBatteries() {
+        assertEquals(1.6, DashboardViewModel.fairCharges(1.4, delivery(5_000.0, 1_000.0), 5_000)!!, 1e-9)
+        assertNull(DashboardViewModel.fairCharges(1.4, delivery(5_000.0, 1_000.0), null))
+        assertNull(DashboardViewModel.fairCharges(1.4, delivery(5_000.0, 1_000.0), 0))
+        assertNull(DashboardViewModel.fairCharges(1.4, delivery(5_000.0, 0.0), 5_000))
+        assertNull(DashboardViewModel.fairCharges(1.4, null, 5_000))
     }
 
     @Test

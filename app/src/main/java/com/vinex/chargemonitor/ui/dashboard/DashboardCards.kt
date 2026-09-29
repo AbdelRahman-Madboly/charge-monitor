@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.vinex.chargemonitor.data.BankEvent
 import com.vinex.chargemonitor.data.BankEventKind
 import com.vinex.chargemonitor.data.PowerSource
+import com.vinex.chargemonitor.stats.PhoneLoad
 import com.vinex.chargemonitor.stats.StatsCalculator
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.components.ColorDot
@@ -83,6 +85,8 @@ internal fun BankCard(
         } else {
             MeasureCallout(promised, capacity)
         }
+
+        DeliveredBlock(card)
 
         StatLine(
             energy(card.whIn),
@@ -159,7 +163,94 @@ private fun BankDetails(card: SourceCard, capacity: StatsCalculator.CapacityEsti
         if (card.usedExcluded > 0) {
             Note("${plural(card.usedExcluded, "session")} used while charging left out of capacity and power.")
         }
+        card.delivery?.let { PhoneLoadNote(it) }
     }
+}
+
+/**
+ * What the bank gave the phone in mAh: the charge that reached the battery (measured) plus what
+ * the phone used while the screen was on (estimated), so a bank used while charging is not
+ * ranked below one charged with the screen off.
+ */
+@Composable
+private fun DeliveredBlock(card: SourceCard) {
+    val d = card.delivery ?: return
+    if (d.deliveredMah < 0.5) return
+    val estimated = d.phoneUseMah >= 0.5
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(Space.s), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+            Text("Delivered to phone", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Figure("Into battery", "${Format.mah(d.intoBatteryMah)} mAh", "measured")
+            if (estimated) {
+                val share = d.screenOnShare?.let { ", screen on ${Format.percent(it)} %" } ?: ""
+                Figure("Used by phone while charging", "~${Format.mah(d.phoneUseMah)} mAh", "estimated$share")
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Total delivered",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "${if (estimated) "~" else ""}${Format.mah(d.deliveredMah)} mAh",
+                    style = Readout.small.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            card.fairPhoneCharges?.let { fair ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                    Text(
+                        "= ${Format.fullCharges(fair)} phone charges",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Tag("incl. phone use", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            if (d.unknownSessions > 0) {
+                Note(
+                    "${plural(d.unknownSessions, "session")} used while charging could not be estimated yet; " +
+                        "counted into battery only.",
+                )
+            }
+        }
+    }
+}
+
+/** One labelled mAh figure with how it was obtained underneath. */
+@Composable
+private fun Figure(label: String, value: String, how: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Column(Modifier.weight(1f).padding(end = Space.s)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+            Text(how, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(value, style = Readout.small.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+@Composable
+private fun PhoneLoadNote(d: PhoneLoad.Delivery) {
+    if (d.measuredSessions == 0 && d.typicalSessions == 0) return
+    val measured = if (d.measuredSessions > 0) "measured in ${plural(d.measuredSessions, "session")}" else null
+    val typical = d.typicalLoadMa?.let {
+        "${plural(d.typicalSessions, "session")} without a screen-off baseline used the phone's typical ${Format.mah(it)} mA"
+    }
+    Note("Phone use while charging: ${listOfNotNull(measured, typical).joinToString("; ")}. Screen-off use is not counted.")
+}
+
+/** Charger and other cards: the same split on one line. */
+private fun deliveredLine(d: PhoneLoad.Delivery?): String? {
+    if (d == null || d.phoneUseMah < 0.5) return null
+    return "~${Format.mah(d.deliveredMah)} mAh delivered (incl. ~${Format.mah(d.phoneUseMah)} phone use)"
 }
 
 @Composable
@@ -229,6 +320,7 @@ internal fun ChargerCard(card: SourceCard, rank: Int?) {
             card.fullCharges.takeIf { it > 0.0 }?.let { "${Format.fullCharges(it)} phone charges" },
             stats.fullCount.takeIf { it > 0 }?.let { "$it× to 100 %" },
         )
+        deliveredLine(card.delivery)?.let { Note(it) }
     }
 }
 
@@ -243,6 +335,7 @@ internal fun OtherCard(card: SourceCard, rank: Int?) {
             card.sessionCount.takeIf { it > 0 }?.let { plural(it, "session") },
             avgPower(card.avgW),
         )
+        deliveredLine(card.delivery)?.let { Note(it) }
     }
 }
 
