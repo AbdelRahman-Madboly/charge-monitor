@@ -1,15 +1,13 @@
 # Contributing
 
-Thanks for contributing to this VINEX repository. Follow these rules — they keep the work professional, safe, and
+Thanks for contributing to this repository. Follow these rules — they keep the work professional, safe, and
 legally clean.
 
 ## Before you start
-- Read the project rules below and the [VINEX governance](https://github.com/VINEX-Tech/vinex-meta/blob/main/00-company/governance/README.md) policies.
-- Confirm the project status and boundaries in `PROJECT_REGISTRY.yaml`.
+- Read the project rules below and in `AGENTS.md`.
 
 ## Data safety (required)
 - Never commit real data, database dumps, exports with records, `.env` values, credentials, or client identifiers.
-  See the [Data Handling Policy](https://github.com/VINEX-Tech/vinex-meta/blob/main/00-company/governance/DATA_HANDLING_POLICY.md).
 - Stage named files deliberately. Never `git add -A` where data can live.
 - Run the secret scan before staging any config or exported file.
 
