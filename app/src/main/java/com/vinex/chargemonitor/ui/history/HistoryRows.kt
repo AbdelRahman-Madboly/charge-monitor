@@ -14,9 +14,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -259,5 +264,194 @@ private fun SectionBar(title: String, totals: HistoryTotals, dot: Color?) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
+    }
+}
+
+/** Chevron that says whether a header or run is open. */
+@Composable
+private fun Chevron(expanded: Boolean, what: String) {
+    Icon(
+        if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = if (expanded) "Collapse $what" else "Expand $what",
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(20.dp),
+    )
+}
+
+/** Top-level source type header: "Power banks", with its totals on a second line. Tap to collapse. */
+@Composable
+fun KindHeader(title: String, totals: HistoryTotals, expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = Space.l, vertical = Space.s),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.s),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(
+                HistoryText.groupHeader(totals),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Chevron(expanded, title)
+    }
+}
+
+/** One source inside a source type section. */
+@Composable
+fun SourceSubHeader(source: PowerSource?, totals: HistoryTotals, expanded: Boolean, onToggle: () -> Unit) {
+    val name = source?.name ?: "Unknown source"
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .clickable(onClick = onToggle)
+            .padding(start = Space.l, end = Space.l, top = Space.s, bottom = Space.s),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.s),
+    ) {
+        ColorDot(sourceColor(source))
+        Column(Modifier.weight(1f)) {
+            Text(
+                name,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                HistoryText.groupHeader(totals),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Chevron(expanded, name)
+    }
+}
+
+/**
+ * One charge run: source, time span, level from the first plug-in to the last unplug, and the
+ * summed figures. Tap to show the pieces. [liveLevel] is the level right now if the run is recording.
+ */
+@Composable
+fun RunRow(
+    run: ChargeRun,
+    source: PowerSource?,
+    showDate: Boolean,
+    emphasis: RowEmphasis,
+    liveLevel: Float?,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    val color = sourceColor(source)
+    val end = liveLevel ?: run.endLevel
+    val scheme = MaterialTheme.colorScheme
+    val multi = run.pieces > 1
+    val unconfirmed = run.sessions.any { needsConfirmation(it, source) }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .background(if (run.isOpen) scheme.primary.copy(alpha = 0.07f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(end = Space.l),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .padding(start = Space.s, top = Space.m, bottom = Space.m)
+                .width(4.dp)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(2.dp))
+                .background(color),
+        )
+        Column(
+            Modifier.weight(1f).padding(start = Space.m, top = Space.m, bottom = Space.m),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                Text(
+                    source?.name ?: "Unknown source",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (run.isOpen) Tag("Charging now", color = scheme.primary)
+                if (unconfirmed) Tag("unconfirmed", color = scheme.error)
+                if (multi) Tag(HistoryText.pieces(run.pieces))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                Text(
+                    "${Format.levelInt(run.startLevel)} → ${Format.levelInt(end)} %",
+                    style = Readout.small.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                )
+                LevelBar(run.startLevel, end, color, Modifier.weight(1f).widthIn(max = 140.dp))
+            }
+            Text(
+                HistoryText.runTimes(run, showDate),
+                style = MaterialTheme.typography.bodyMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (multi || unconfirmed) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                    Text(
+                        if (multi) "${Format.duration(run.activeMs)} charging over ${Format.duration(run.spanMs)}" else "Tap to confirm the source",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Chevron(expanded, "pieces")
+                }
+            }
+        }
+
+        Column(
+            Modifier.padding(start = Space.m).widthIn(min = 76.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            val levelText = HistoryText.signedLevel(run.levelAdded.toFloat())
+            val levelColor = if (run.levelAdded > 0.05) scheme.primary else scheme.onSurfaceVariant
+            val whText = "${Format.wh(run.wh)} Wh"
+            val durText = Format.duration(run.activeMs)
+            val mahText = "${Format.mah(run.mah)} mAh"
+            val big = Readout.tile.copy(fontSize = 18.sp)
+            when (emphasis) {
+                RowEmphasis.LEVEL -> {
+                    Text(levelText, style = big, color = levelColor, maxLines = 1)
+                    Text(whText, style = Readout.small, maxLines = 1)
+                    Text(mahText, style = Readout.small, color = scheme.onSurfaceVariant, maxLines = 1)
+                    Text(durText, style = Readout.small, color = scheme.onSurfaceVariant, maxLines = 1)
+                }
+                RowEmphasis.ENERGY -> {
+                    Text(whText, style = big, maxLines = 1)
+                    Text(mahText, style = Readout.small, color = scheme.onSurfaceVariant, maxLines = 1)
+                    Text(levelText, style = Readout.small, color = levelColor, maxLines = 1)
+                    Text(durText, style = Readout.small, color = scheme.onSurfaceVariant, maxLines = 1)
+                }
+                RowEmphasis.DURATION -> {
+                    Text(durText, style = big, maxLines = 1)
+                    Text(levelText, style = Readout.small, color = levelColor, maxLines = 1)
+                    Text(whText, style = Readout.small, maxLines = 1)
+                    Text(mahText, style = Readout.small, color = scheme.onSurfaceVariant, maxLines = 1)
+                }
+            }
+        }
     }
 }

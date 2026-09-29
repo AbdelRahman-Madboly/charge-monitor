@@ -73,9 +73,14 @@ class HistoryViewModel(
         liveLevel,
     ) { sessions, sources, f, live ->
         val byId = sources.associateBy { it.id }
-        val view = HistoryQuery.apply(sessions, f, ZoneId.systemDefault(), System.currentTimeMillis()) { id ->
-            byId[id]?.name.orEmpty()
-        }
+        val view = HistoryQuery.apply(
+            sessions,
+            f,
+            ZoneId.systemDefault(),
+            System.currentTimeMillis(),
+            sourceName = { id -> byId[id]?.name.orEmpty() },
+            sourceKind = { id -> byId[id]?.kind },
+        )
         HistoryUi(
             view = view,
             filter = f,
@@ -89,14 +94,16 @@ class HistoryViewModel(
 
     fun setSort(sort: HistorySort) = filter.update { it.copy(sort = sort) }
 
+    fun setGroup(group: HistoryGroup) = filter.update { it.copy(group = group) }
+
     fun setSource(sourceId: Long?) = filter.update { it.copy(sourceId = sourceId) }
 
     fun setRange(range: HistoryRange) = filter.update { it.copy(range = range) }
 
     fun setHideShort(hide: Boolean) = filter.update { it.copy(hideShort = hide) }
 
-    /** Shows everything again. The order is a preference rather than a filter, so it stays. */
-    fun clearFilters() = filter.update { HistoryFilter(sort = it.sort, hideShort = false) }
+    /** Shows everything again. Order and grouping are preferences rather than filters, so they stay. */
+    fun clearFilters() = filter.update { HistoryFilter(sort = it.sort, group = it.group, hideShort = false) }
 
     private val _exports = MutableSharedFlow<ExportResult>(extraBufferCapacity = 1)
     val exports: SharedFlow<ExportResult> = _exports.asSharedFlow()
