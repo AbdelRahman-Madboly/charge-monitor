@@ -33,9 +33,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.Sample
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.chart.Axis
@@ -47,6 +49,7 @@ import com.vinex.chargemonitor.ui.components.SectionHeader
 import com.vinex.chargemonitor.ui.components.SourcePickerSheet
 import com.vinex.chargemonitor.ui.components.Space
 import com.vinex.chargemonitor.ui.components.StatRow
+import com.vinex.chargemonitor.ui.components.StatTile
 import com.vinex.chargemonitor.ui.theme.SeriesColors
 
 /** The four quantities a session chart can show; at most two at once, one per axis. */
@@ -93,11 +96,8 @@ fun SessionDetailScreen(sessionId: Long, onBack: () -> Unit, modifier: Modifier 
                 .padding(horizontal = Space.l, vertical = Space.s),
             verticalArrangement = Arrangement.spacedBy(Space.m),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-                ColorDot(ui.source?.let { Color(it.colorArgb) } ?: MaterialTheme.colorScheme.outline)
-                Text(ui.source?.name ?: "Unknown source", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                SessionFlags(s, ui.source)
-            }
+            SourceCard(s, ui, onChange = { picking = true })
+
             val guessed = ui.source
             if (guessed != null && needsConfirmation(s, guessed)) {
                 Panel {
@@ -115,6 +115,31 @@ fun SessionDetailScreen(sessionId: Long, onBack: () -> Unit, modifier: Modifier 
                 }
             }
 
+            KeyStats(s, sourceColor(ui.source))
+
+            SectionHeader("Details")
+            Panel {
+                StatRow("Full phone charges", Format.f(s.levelAdded / 100.0, 2))
+                StatRow("Charge in", "${Format.mah(s.mahIn)} mAh")
+                s.counterMahIn?.let { StatRow("Charge counter", "${Format.mah(it)} mAh") }
+                StatRow("Peak / average power", "${Format.watts(s.peakW)} / ${Format.watts(s.avgW)} W")
+                s.maxTempC?.let { StatRow("Max temperature", "${Format.tempC(it)} °C") }
+                StatRow("Screen on", "${Format.percent(s.screenOnFraction.toDouble())} % of the time")
+                StatRow("Plugged", "${Format.clock(s.startMs)} → ${s.endMs?.let { Format.clock(it) } ?: "now"}")
+                StatRow("Plug", s.plug)
+                StatRow("Samples", s.sampleCount.toString())
+                if (s.usedWhileCharging) {
+                    Text(
+                        "The screen was on for more than a fifth of this session, so capacity, average power and " +
+                            "charging speed leave it out unless \"Include sessions used while charging\" is on in " +
+                            "the Dashboard. Full charges still count it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            SectionHeader("Chart")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Space.s)) {
                 Quantity.entries.forEach { q ->
                     FilterChip(
@@ -166,22 +191,7 @@ fun SessionDetailScreen(sessionId: Long, onBack: () -> Unit, modifier: Modifier 
                 )
             }
 
-            SectionHeader("Stats")
-            Panel {
-                StatRow("Start → end", "${Format.level(s.startLevel)} → ${s.endLevel?.let { Format.level(it) } ?: "…"} %")
-                StatRow("Added", "${Format.level(s.levelAdded)} %  (${Format.f(s.levelAdded / 100.0, 2)} full charges)")
-                StatRow("Duration", Format.duration((s.endMs ?: s.updatedMs) - s.startMs))
-                StatRow("Charge in", "${Format.mah(s.mahIn)} mAh")
-                s.counterMahIn?.let { StatRow("Charge counter", "${Format.mah(it)} mAh") }
-                StatRow("Energy in", "${Format.wh(s.whIn)} Wh")
-                StatRow("Peak / average", "${Format.watts(s.peakW)} / ${Format.watts(s.avgW)} W")
-                s.maxTempC?.let { StatRow("Max temperature", "${Format.tempC(it)} °C") }
-                StatRow("Screen on", "${Format.percent(s.screenOnFraction.toDouble())} %")
-                StatRow("Plug", s.plug)
-                StatRow("Samples", s.sampleCount.toString())
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.padding(top = Space.s)) {
                 OutlinedButton(onClick = { picking = true }, modifier = Modifier.weight(1f)) { Text("Change source") }
                 OutlinedButton(
                     onClick = { confirmDelete = true },
@@ -228,6 +238,74 @@ fun SessionDetailScreen(sessionId: Long, onBack: () -> Unit, modifier: Modifier 
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** Source name and kind in its colour, the session's flags, and a quick way to change it. */
+@Composable
+private fun SourceCard(s: ChargeSession, ui: SessionDetailUi, onChange: () -> Unit) {
+    val source = ui.source
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.m)) {
+            ColorDot(sourceColor(source), size = 16.dp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    source?.name ?: "Unknown source",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    source?.let { kindLabel(it.kind) } ?: "Source not found",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onChange) { Text("Change") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+            SessionFlags(s, source)
+        }
+    }
+}
+
+/** The three numbers people open a session for, then where the level went. */
+@Composable
+private fun KeyStats(s: ChargeSession, color: Color) {
+    val end = s.endLevel ?: s.startLevel
+    val delta = end - s.startLevel
+    val scheme = MaterialTheme.colorScheme
+    Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+        StatTile(
+            label = "Added",
+            value = HistoryText.signedLevel(delta).removeSuffix(" %"),
+            unit = "%",
+            modifier = Modifier.weight(1f),
+            accent = if (delta < -0.05f) scheme.error else if (delta > 0.05f) scheme.primary else null,
+        )
+        StatTile(
+            label = "Energy",
+            value = HistoryText.signedWh(s.whIn).removeSuffix(" Wh"),
+            unit = "Wh",
+            modifier = Modifier.weight(1f),
+            accent = if (s.whIn <= -0.005) scheme.error else null,
+        )
+        StatTile(
+            label = if (s.isOpen) "So far" else "Duration",
+            value = Format.duration(HistoryQuery.durationMs(s)),
+            unit = "",
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${Format.level(s.startLevel)} % → ${if (s.isOpen && s.endLevel == null) "…" else Format.level(end)} %",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            if (s.isOpen) Text("Charging now", style = MaterialTheme.typography.labelLarge, color = scheme.primary)
+        }
+        LevelBar(s.startLevel, end, color = color, modifier = Modifier.fillMaxWidth(), height = 10.dp)
     }
 }
 
