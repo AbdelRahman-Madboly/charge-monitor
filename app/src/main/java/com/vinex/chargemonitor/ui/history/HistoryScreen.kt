@@ -248,7 +248,7 @@ private fun Controls(
             FilterChip(
                 selected = filter.hideShort,
                 onClick = { onHideShort(!filter.hideShort) },
-                label = { Text("Hide short (<1 min or 0 %)") },
+                label = { Text("Hide short") },
                 leadingIcon = if (filter.hideShort) {
                     { Icon(Icons.Filled.Check, contentDescription = null, Modifier.size(18.dp)) }
                 } else {
