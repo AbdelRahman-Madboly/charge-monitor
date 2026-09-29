@@ -63,6 +63,11 @@ class SettingsViewModel(
         .map { all -> all.filter { it.kind == SourceKind.CHARGER && !it.builtIn } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** Recorded (non-mock) sessions per source id, for row subtitles and the archive confirmation; null until loaded. */
+    val sessionCounts: StateFlow<Map<Long, Int>?> = repository.observeSessions()
+        .map { all -> all.filter { !it.mock }.groupingBy { it.sourceId }.eachCount() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     fun save(draft: BankDraft) {
         if (!draft.isValid) return
         viewModelScope.launch { saveBank(repository, draft) }
