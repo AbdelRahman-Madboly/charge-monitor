@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [PowerSource::class, ChargeSession::class, Sample::class, BankEvent::class],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -24,7 +24,7 @@ abstract class AppDatabase : RoomDatabase() {
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, NAME)
                 .addCallback(SeedCallback)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
 
         /**
@@ -56,6 +56,18 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE power_source ADD COLUMN ratedW REAL")
+            }
+        }
+
+        /**
+         * Adds the modelled energy flow. Nullable with no default: older sessions have no
+         * per-reading model, and the stats fall back to a session-average estimate for them.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE charge_session ADD COLUMN phoneUseWh REAL")
+                db.execSQL("ALTER TABLE charge_session ADD COLUMN portWh REAL")
+                db.execSQL("ALTER TABLE charge_session ADD COLUMN cellsWh REAL")
             }
         }
     }

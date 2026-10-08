@@ -11,7 +11,8 @@ class SettingsStoreTest {
     @Test
     fun defaultsMatchSpec() {
         val s = SettingsStore(FakeSharedPreferences())
-        assertEquals(0.85f, s.lossFactor.value)
+        assertEquals(0.30f, s.phoneIdleW.value)
+        assertEquals(1.30f, s.phoneScreenW.value)
         assertEquals(80, s.targetLevel.value)
         assertEquals(42f, s.tempThresholdC.value)
         assertEquals(10, s.sampleIntervalSec.value)
@@ -25,13 +26,13 @@ class SettingsStoreTest {
     fun valuesSurviveANewInstance() {
         val prefs = FakeSharedPreferences()
         SettingsStore(prefs).apply {
-            lossFactor.set(0.8f)
+            phoneIdleW.set(0.4f)
             currentUnit.set(CurrentUnit.MILLI)
             lastNonLaptopSourceId.set(7L)
             lastBankIds.set(listOf(5L, 4L))
         }
         val reloaded = SettingsStore(prefs)
-        assertEquals(0.8f, reloaded.lossFactor.value)
+        assertEquals(0.4f, reloaded.phoneIdleW.value)
         assertEquals(CurrentUnit.MILLI, reloaded.currentUnit.value)
         assertEquals(7L, reloaded.lastNonLaptopSourceId.value)
         assertEquals(listOf(5L, 4L), reloaded.lastBankIds.value)

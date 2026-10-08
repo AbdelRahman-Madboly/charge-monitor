@@ -19,33 +19,24 @@ object SourcePresets {
     )
 
     /**
-     * The 3S8P pack from the 18650 tester (24 cells, 17,492 mAh at 11.1 V, about 167 Wh) behind a
-     * Joyroom 30 W car charger. Rated in the usual 3.7 V power-bank convention, 167 Wh / 3.7 V,
-     * so its label sits on the same scale as a bought bank's. The cells were measured to 2.50 V;
-     * a BMS cutting at 3.00 V and the car charger's own dropout leave less than this usable,
-     * which is exactly what the capacity estimate is there to find out.
+     * PB-1 v1, serial 0001: ten new Panasonic NCR18650B in parallel (1S10P) behind a 22.5 W
+     * QC4+/PD3.0 five-port module. Rated as the product label states it: 34,000 mAh at 3.6 V,
+     * about 122 Wh of cell energy (datasheet typical 3,350 mAh a cell, minimum 3,200).
      */
-    val DIY_3S8P = Preset(name = "DIY 3S8P + Joyroom 30W", kind = SourceKind.POWER_BANK, ratedMah = 45_000)
-
-    /**
-     * Ten new Panasonic NCR18650B in parallel (1S10P) behind a 22.5 W QC4+/PD3.0 five-port
-     * module. Rated as the cells' datasheet states them: 3,350 mAh typical at 3.6 V each, so
-     * 33,500 mAh and about 121 Wh. The datasheet minimum is 3,200 mAh.
-     */
-    val DIY_1S10P = Preset(
-        name = "DIY 1S10P NCR18650B + 22.5W",
+    val PB1_V1_SN0001 = Preset(
+        name = "PB-1 v1 SN0001",
         kind = SourceKind.POWER_BANK,
-        ratedMah = 33_500,
+        ratedMah = 34_000,
         nominalV = 3.6,
     )
 
     /** Anker Zolo 1C 30 W USB-C wall charger with the Anker A8060 240 W C-to-C cable. */
     val ANKER_ZOLO_30W = Preset(name = "Anker Zolo 30W (A8060 cable)", kind = SourceKind.CHARGER, ratedW = 30.0)
 
-    val ALL: List<Preset> = listOf(DIY_3S8P, DIY_1S10P, ANKER_ZOLO_30W)
+    val ALL: List<Preset> = listOf(PB1_V1_SN0001, ANKER_ZOLO_30W)
 
     /** Bumped when [ALL] gains a preset, so the new one is offered once to existing installs. */
-    const val VERSION = 2
+    const val VERSION = 3
 
     /** The phone's main charger: the one the "Connected to?" prompt offers by default. */
     val MAIN_CHARGER: Preset = ANKER_ZOLO_30W

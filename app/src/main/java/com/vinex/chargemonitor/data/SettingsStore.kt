@@ -2,6 +2,7 @@ package com.vinex.chargemonitor.data
 
 import android.content.SharedPreferences
 import com.vinex.chargemonitor.battery.CurrentUnit
+import com.vinex.chargemonitor.stats.EnergyModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,8 +46,17 @@ class SettingsStore(private val prefs: SharedPreferences) {
     private fun string(key: String, default: String?) =
         Setting(key, default, { k, d -> getString(k, d) }, { k, v -> putString(k, v) })
 
-    /** Bank boost + phone charger efficiency used by the capacity estimate. */
-    val lossFactor = float("loss_factor", DEFAULT_LOSS_FACTOR)
+    /** Phone draw with the screen off while plugged in, W; feeds the energy model. */
+    val phoneIdleW = float("phone_idle_w", EnergyModel.DEFAULT_PHONE_IDLE_W.toFloat())
+
+    /** Extra phone draw with the screen on, W; feeds the energy model. */
+    val phoneScreenW = float("phone_screen_w", EnergyModel.DEFAULT_PHONE_SCREEN_W.toFloat())
+
+    /** The energy model with this phone's draw. */
+    fun energyModel(): EnergyModel.Params = EnergyModel.Params(
+        phoneIdleW = phoneIdleW.value.toDouble(),
+        phoneScreenW = phoneScreenW.value.toDouble(),
+    )
 
     /** Phone battery design capacity in mAh; 0 means unknown. */
     val designCapacityMah = int("design_capacity_mah", 0)
@@ -136,6 +146,5 @@ class SettingsStore(private val prefs: SharedPreferences) {
 
     companion object {
         const val PREFS_NAME = "settings"
-        const val DEFAULT_LOSS_FACTOR = 0.85f
     }
 }

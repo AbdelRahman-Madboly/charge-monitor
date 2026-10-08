@@ -60,6 +60,14 @@ data class ChargeSession(
     val unpluggedAtMs: Long? = null,
     /** Charge counter at the last plugged reading; lets a restart bridge the time it was dead. */
     val lastCounterUah: Long? = null,
+    /**
+     * Modelled energy (see [com.vinex.chargemonitor.stats.EnergyModel]): what the phone ran on
+     * while plugged in, what left the source's USB port, and what that cost a power bank's cells.
+     * Null on sessions recorded before the model existed.
+     */
+    val phoneUseWh: Double? = null,
+    val portWh: Double? = null,
+    val cellsWh: Double? = null,
 ) {
     val isOpen: Boolean get() = endMs == null
 

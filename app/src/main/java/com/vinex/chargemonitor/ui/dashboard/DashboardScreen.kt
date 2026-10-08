@@ -105,7 +105,6 @@ fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = view
                         SourceKind.POWER_BANK -> BankCard(
                             card,
                             rank,
-                            ui.lossFactor,
                             onMark = { kind -> vm.markBank(card.source.id, kind) },
                             onUndo = { id -> vm.undoMark(id) },
                         )
@@ -320,6 +319,30 @@ private fun Charts(sessions: List<ChargeSession>, sources: List<PowerSource>, in
             decimals = 1,
             description = "Average power per session",
         )
+    }
+
+    val banks = remember(sources) { sources.filter { it.kind == SourceKind.POWER_BANK }.map { it.id }.toSet() }
+    val fromBanks = sessions.filter { it.sourceId in banks && it.whIn >= 0.05 }
+    if (fromBanks.isNotEmpty()) {
+        Panel {
+            Text("Efficiency per bank session", style = MaterialTheme.typography.titleSmall)
+            BarChart(
+                bars = fromBanks.map { s ->
+                    val eff = StatsCalculator.energy(s).efficiency ?: 0.0
+                    Bar(
+                        (eff * 100).toFloat(),
+                        colorOf[s.sourceId] ?: fallback,
+                        Format.shortDay(s.startMs),
+                        "${detail(s)} · avg ${Format.watts(s.avgW)} W",
+                    )
+                },
+                unit = "%",
+                decimals = 0,
+                reference = 100f,
+                description = "Cells to battery efficiency per power bank session",
+            )
+            Note("Cells to battery, estimated. Slow charges and long tails at full battery score lower.")
+        }
     }
 }
 

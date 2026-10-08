@@ -10,6 +10,7 @@ import com.vinex.chargemonitor.data.Sample
 import com.vinex.chargemonitor.data.SettingsStore
 import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.source.SourceResolver
+import com.vinex.chargemonitor.stats.EnergyModel
 import kotlin.math.roundToInt
 
 /** The slice of persistence the tracker needs; lets tests run it against an in-memory fake. */
@@ -223,6 +224,10 @@ class SessionTracker(
             firstCounterUah = startCounter,
             lastCounterUah = if (snapshot.isPlugged) snapshot.chargeCounterUah ?: reference else reference,
             startRefined = true,
+            phoneUseWh = open.phoneUseWh ?: 0.0,
+            portWh = open.portWh ?: 0.0,
+            cellsWh = open.cellsWh ?: 0.0,
+            model = settings.energyModel(),
         )
         if (mode == RestoreMode.CONTINUED) base = base.bridgeDeadInterval(open, snapshot)
         // The current reading becomes the new integration reference rather than being folded
@@ -258,10 +263,15 @@ class SessionTracker(
         val now = snapshot.chargeCounterUah ?: return this
         val gapMs = (snapshot.tMs - open.updatedMs).coerceAtLeast(0L)
         val gapMah = (now - before) / 1000.0
+        val gapWh = gapMah * snapshot.voltageMv / 1_000_000.0
+        val f = EnergyModel.bridged(gapWh, gapMs / 3_600_000.0, screenOn = false, model)
         return copy(
             mah = mah + gapMah,
-            wh = wh + gapMah * snapshot.voltageMv / 1_000_000.0,
+            wh = wh + gapWh,
             integratedMs = integratedMs + gapMs,
+            phoneUseWh = phoneUseWh + (f?.phoneUseW ?: 0.0),
+            portWh = portWh + (f?.portW ?: 0.0),
+            cellsWh = cellsWh + (f?.cellsW ?: 0.0),
         )
     }
 
@@ -294,7 +304,7 @@ class SessionTracker(
         val id = store.startSession(draft)
         row = draft.copy(id = id)
         source = store.source(sourceId)
-        acc = SessionAccumulator.EMPTY
+        acc = SessionAccumulator(model = settings.energyModel())
         unpluggedAtMs = null
         pending.clear()
         persistedSamples = 0
@@ -352,6 +362,9 @@ class SessionTracker(
             mahIn = best.mah,
             counterMahIn = counterMah(),
             whIn = best.wh,
+            phoneUseWh = t.phoneUseWh,
+            portWh = best.portWh,
+            cellsWh = best.cellsWh,
             peakW = t.peakW,
             avgW = t.avgW,
             maxTempC = t.maxTempC,
@@ -389,13 +402,20 @@ class SessionTracker(
      */
     private fun bestTotals(t: SessionTotals): Totals {
         val counter = counterMah()
-        if (counter == null || counter < COUNTER_TRUST_MAH) return Totals(t.mah, t.wh)
+        if (counter == null || counter < COUNTER_TRUST_MAH) return Totals(t.mah, t.wh, t.portWh, t.cellsWh)
         val meanV = if (t.mah > 1.0) t.wh * 1000.0 / t.mah else null
         val v = meanV?.takeIf { it in 3.0..4.6 } ?: ((acc.last?.voltageMv ?: 3_850) / 1000.0)
-        return Totals(counter, counter * v / 1000.0)
+        val wh = counter * v / 1000.0
+        // Battery energy the readings missed still came through the bank, at the session's own
+        // rate of port and cell energy per Wh that reached the phone.
+        val reached = t.wh.coerceAtLeast(0.0) + t.phoneUseWh
+        val extra = wh - t.wh
+        if (reached <= 0.0) return Totals(counter, wh, t.portWh, t.cellsWh)
+        val scale = ((reached + extra) / reached).coerceAtLeast(0.0)
+        return Totals(counter, wh, t.portWh * scale, t.cellsWh * scale)
     }
 
-    private data class Totals(val mah: Double, val wh: Double)
+    private data class Totals(val mah: Double, val wh: Double, val portWh: Double, val cellsWh: Double)
 
     private fun counterMah(): Double? {
         val start = startCounterUah ?: return null

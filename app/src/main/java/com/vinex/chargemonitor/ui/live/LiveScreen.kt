@@ -52,7 +52,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vinex.chargemonitor.LiveBus
 import com.vinex.chargemonitor.battery.BatterySnapshot
 import com.vinex.chargemonitor.data.PowerSource
+import com.vinex.chargemonitor.data.SourceKind
 import com.vinex.chargemonitor.session.SessionTotals
+import com.vinex.chargemonitor.stats.EnergyModel
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.chart.Axis
 import com.vinex.chargemonitor.ui.chart.ChartSeries
@@ -109,6 +111,7 @@ fun LiveScreen(
 
         if (active) {
             SourceCard(live.source, onChange = { picking = true })
+            if (live.source?.kind == SourceKind.POWER_BANK) ui.flow?.let { PowerFlowCard(ui, it, live.source) }
             ui.live.session?.let { SessionCard(it) }
             SessionChart(ui)
         } else {
@@ -235,8 +238,14 @@ private fun heroSubline(ui: LiveUi, headline: Headline): String? {
     val live = ui.live
     val snap = live.snapshot
     return when (headline) {
-        Headline.CHARGING -> live.source?.ratedW?.takeIf { it > 0.0 }?.let { rated ->
-            "${Format.percent(snap!!.powerW / rated)} % of the ${Format.watts(rated)} W rating"
+        Headline.CHARGING -> if (live.source?.kind == SourceKind.POWER_BANK) {
+            ui.flow?.let { f ->
+                "The bank gives ≈${Format.watts(f.cellsW)} W from its cells; ${Format.percent(f.efficiency)} % reaches the battery"
+            }
+        } else {
+            live.source?.ratedW?.takeIf { it > 0.0 }?.let { rated ->
+                "${Format.percent(snap!!.powerW / rated)} % of the ${Format.watts(rated)} W rating"
+            }
         }
         Headline.PLUGGED_IDLE -> if (live.sessionId == null) {
             "Waiting for the session to start"
@@ -349,6 +358,86 @@ private fun SourceCard(source: PowerSource?, onChange: () -> Unit) {
             }
             FilledTonalButton(onClick = onChange) { Text(if (unknown) "Choose" else "Change") }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Power flow: where the bank's power goes right now, and how much charge the bank has left.
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun PowerFlowCard(ui: LiveUi, flow: EnergyModel.Flow, bank: PowerSource) {
+    val session = ui.live.session
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Power flow", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Tag("ESTIMATED")
+        }
+        FlowRow("From the cells", "${Format.watts(flow.cellsW)} W", strong = true)
+        FlowRow("Bank module loss", "−${Format.watts(flow.bankLossW)} W")
+        FlowRow("Cable and phone charger loss", "−${Format.watts(flow.phoneLossW)} W")
+        FlowRow("Phone running", "−${Format.watts(flow.phoneUseW)} W")
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        FlowRow("Into the battery (measured)", "${Format.watts(flow.batteryW.coerceAtLeast(0.0))} W", strong = true)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            SummaryCell("Efficiency now", Format.percent(flow.efficiency), "%", Modifier.weight(1f), MaterialTheme.colorScheme.primary)
+            SummaryCell("This session", Format.percent(session?.efficiency), "%", Modifier.weight(1f))
+        }
+        session?.takeIf { it.cellsWh > 0.0 }?.let { t ->
+            val volts = bank.nominalV.takeIf { it > 0.0 } ?: 3.7
+            StatRow("Taken from the cells", "${Format.wh(t.cellsWh)} Wh · ${Format.mah(t.cellsWh / volts * 1000.0)} mAh")
+            StatRow("Lost on the way", "${Format.wh((t.cellsWh - t.wh.coerceAtLeast(0.0)).coerceAtLeast(0.0))} Wh")
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        val share = ui.bankLeftShare
+        if (share != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Bank charge left",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "${Format.percent(share)} %" + (ui.phoneChargesLeft?.let { " · ≈${Format.f(it, 1)} phone charges" } ?: ""),
+                    style = Readout.small.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            LevelBar(level = share.toFloat(), target = null, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "${Format.wh(ui.bankLeftWh)} of ${Format.wh(bank.ratedWh)} Wh label energy since Recharged; " +
+                    "the module should show ${kotlin.math.ceil(share * 4).toInt().coerceIn(0, 4)} of 4 lights.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "Mark Recharged on the Dashboard when the bank is full to track the charge it has left.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FlowRow(label: String, value: String, strong: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (strong) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (strong) FontWeight.SemiBold else null,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            value,
+            style = Readout.small.copy(fontWeight = if (strong) FontWeight.Bold else FontWeight.Normal),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 

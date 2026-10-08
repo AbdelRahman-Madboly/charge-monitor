@@ -2,6 +2,7 @@ package com.vinex.chargemonitor.session
 
 import com.vinex.chargemonitor.battery.BatterySnapshot
 import com.vinex.chargemonitor.battery.ChargeStatus
+import com.vinex.chargemonitor.stats.EnergyModel
 
 /** Running results of a session, in the units the UI and the database use. */
 data class SessionTotals(
@@ -19,7 +20,16 @@ data class SessionTotals(
     val sampleCount: Int,
     /** Charge-counter delta over the session in mAh, for cross-checking [mah]; null if unsupported. */
     val counterMah: Double? = null,
+    /** Estimated energy the phone ran on while plugged in (see [EnergyModel]). */
+    val phoneUseWh: Double = 0.0,
+    /** Estimated energy at the source's USB port. */
+    val portWh: Double = 0.0,
+    /** Estimated energy drawn from a power bank's cells to deliver [portWh]. */
+    val cellsWh: Double = 0.0,
 ) {
+    /** Battery energy over cell energy; null before the bank has given anything. */
+    val efficiency: Double? get() = if (cellsWh > 0.0) wh.coerceAtLeast(0.0) / cellsWh else null
+
     val durationMs: Long get() = lastMs - startMs
     val levelAdded: Float get() = (endLevel - startLevel).coerceAtLeast(0f)
     /** Session counts as "used while charging" above this screen-on share (spec section 2). */
@@ -38,6 +48,8 @@ data class SessionTotals(
  *   the start time and start level; unplugged snapshots before that are ignored.
  * - mAh and Wh use the trapezoidal rule between consecutive plugged snapshots on `currentMa`
  *   and `powerW`; negative current (phone drawing more than the source gives) subtracts.
+ * - Phone use, port and cell energy use the same rule on each snapshot's [EnergyModel.flow], so
+ *   every loss is taken at the power it happened at.
  * - An interval longer than [MAX_INTEGRATION_GAP_MS] is not bridged with a straight line: it is
  *   integrated from the charge-counter delta when both ends have one (Wh at the mean of the two
  *   voltages), and skipped otherwise.
@@ -81,6 +93,10 @@ data class SessionAccumulator(
     val lastCounterUah: Long? = null,
     /** False while [startLevel] is a bare integer that a later reading may still refine. */
     val startRefined: Boolean = true,
+    val phoneUseWh: Double = 0.0,
+    val portWh: Double = 0.0,
+    val cellsWh: Double = 0.0,
+    val model: EnergyModel.Params = EnergyModel.DEFAULT,
 ) {
     val isEmpty: Boolean get() = last == null
 
@@ -124,9 +140,14 @@ data class SessionAccumulator(
 
         if (dtMs <= MAX_INTEGRATION_GAP_MS) {
             val hours = dtMs / MS_PER_HOUR
+            val a = EnergyModel.flow(previous.powerW, previous.screenOn, model)
+            val b = EnergyModel.flow(snapshot.powerW, snapshot.screenOn, model)
             next = next.copy(
                 mah = mah + (previous.currentMa + snapshot.currentMa) / 2.0 * hours,
                 wh = wh + (previous.powerW + snapshot.powerW) / 2.0 * hours,
+                phoneUseWh = phoneUseWh + (a.phoneUseW + b.phoneUseW) / 2.0 * hours,
+                portWh = portWh + (a.portW + b.portW) / 2.0 * hours,
+                cellsWh = cellsWh + (a.cellsW + b.cellsW) / 2.0 * hours,
                 integratedMs = integratedMs + dtMs,
                 screenOnMs = screenOnMs + if (previous.screenOn) dtMs else 0L,
                 screenTrackedMs = screenTrackedMs + dtMs,
@@ -137,10 +158,16 @@ data class SessionAccumulator(
             if (from != null && to != null) {
                 val gapMah = (to - from) / 1000.0
                 val meanV = (previous.voltageMv + snapshot.voltageMv) / 2.0 / 1000.0
+                val gapWh = gapMah * meanV / 1000.0
+                // Nobody saw the screen during the gap; the idle draw is the cautious guess.
+                val f = EnergyModel.bridged(gapWh, dtMs / MS_PER_HOUR, screenOn = false, model)
                 next = next.copy(
                     mah = mah + gapMah,
-                    wh = wh + gapMah * meanV / 1000.0,
+                    wh = wh + gapWh,
                     integratedMs = integratedMs + dtMs,
+                    phoneUseWh = phoneUseWh + (f?.phoneUseW ?: 0.0),
+                    portWh = portWh + (f?.portW ?: 0.0),
+                    cellsWh = cellsWh + (f?.cellsW ?: 0.0),
                 )
             }
         }
@@ -184,6 +211,9 @@ data class SessionAccumulator(
             endLevel = endLevel,
             sampleCount = sampleCount,
             counterMah = firstCounterUah?.let { first -> lastCounterUah?.let { (it - first) / 1000.0 } },
+            phoneUseWh = phoneUseWh,
+            portWh = portWh,
+            cellsWh = cellsWh,
         )
 
     companion object {

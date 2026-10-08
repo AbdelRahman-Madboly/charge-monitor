@@ -134,16 +134,28 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
         // Measurement
         SectionHeader("Measurement")
         ListPanel {
-            val loss by s.lossFactor.flow.collectAsStateWithLifecycle()
+            val idle by s.phoneIdleW.flow.collectAsStateWithLifecycle()
             SliderSetting(
-                title = "Loss factor",
-                caption = "Share of a bank's energy that reaches the phone battery. 0.85 suits most banks; " +
-                    "used only for the real-capacity estimate.",
-                value = loss,
-                range = 0.60f..1.00f,
+                title = "Phone draw, screen off",
+                caption = "What the phone runs on while plugged in with the screen off. The bank pays for it, " +
+                    "so it counts as delivered but never reaches the battery. 0.30 W suits a Galaxy A54.",
+                value = idle,
+                range = 0.00f..1.00f,
                 steps = 0,
-                format = { Format.f(it.toDouble(), 2) },
-                onCommit = { s.lossFactor.set((it * 100).roundToInt() / 100f) },
+                format = { "${Format.f(it.toDouble(), 2)} W" },
+                onCommit = { s.phoneIdleW.set((it * 100).roundToInt() / 100f) },
+            )
+            ListDivider()
+            val screen by s.phoneScreenW.flow.collectAsStateWithLifecycle()
+            SliderSetting(
+                title = "Extra draw, screen on",
+                caption = "Added while the screen is on. Measured at 1.2 to 1.4 W on this phone in light use; " +
+                    "raise it if you game or film while charging.",
+                value = screen,
+                range = 0.00f..4.00f,
+                steps = 0,
+                format = { "${Format.f(it.toDouble(), 1)} W" },
+                onCommit = { s.phoneScreenW.set((it * 10).roundToInt() / 10f) },
             )
             ListDivider()
             val design by s.designCapacityMah.flow.collectAsStateWithLifecycle()
