@@ -51,4 +51,19 @@ class SourcePresetsTest {
         }
         assertTrue(added(full).all { it.colorArgb == palette.first() })
     }
+
+    @Test
+    fun fillsProductDetailsIntoAnExistingPresetRowWithoutOverwritingTheUsers() {
+        val mine = PowerSource(
+            id = 6, name = "PB-1 v1 SN0001", kind = SourceKind.POWER_BANK, ratedMah = 34_000, nominalV = 3.6,
+            colorArgb = 0, notes = "my own note",
+        )
+        val filled = SourcePresets.detailsToFill(listOf(mine, charger)).single()
+        assertEquals(20_000, filled.outputMah)
+        assertEquals(33_500, filled.cellsMah)
+        assertEquals("my own note", filled.notes)
+        assertEquals(6L, filled.id)
+        // Nothing left to fill: no update.
+        assertEquals(emptyList<PowerSource>(), SourcePresets.detailsToFill(listOf(filled)))
+    }
 }

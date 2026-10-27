@@ -175,7 +175,7 @@ fun BankFields(draft: BankDraft, onChange: (BankDraft) -> Unit, modifier: Modifi
             OutlinedTextField(
                 value = draft.ratedMah,
                 onValueChange = { v -> onChange(draft.copy(ratedMah = v.filter { it.isDigit() }.take(6))) },
-                label = { Text("Rated capacity") },
+                label = { Text("Advertised capacity") },
                 suffix = { Text("mAh") },
                 singleLine = true,
                 isError = draft.mahError,
@@ -184,7 +184,7 @@ fun BankFields(draft: BankDraft, onChange: (BankDraft) -> Unit, modifier: Modifi
                         when {
                             draft.mahError -> "Must be between 100 and 200,000 mAh"
                             wh != null && !draft.voltError -> "= ${Format.wh(wh)} Wh at the voltage below"
-                            else -> "Optional. From the label, e.g. 20000"
+                            else -> "Optional. The headline mAh on the label, e.g. 34000"
                         },
                     )
                 },
@@ -204,6 +204,7 @@ fun BankFields(draft: BankDraft, onChange: (BankDraft) -> Unit, modifier: Modifi
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 modifier = Modifier.fillMaxWidth(),
             )
+            ProductFields(draft, onChange)
         }
         Text(
             "Colour on charts",
@@ -240,4 +241,94 @@ fun BankFields(draft: BankDraft, onChange: (BankDraft) -> Unit, modifier: Modifi
             }
         }
     }
+}
+
+/**
+ * A bank's product details: the output rating it is sold with, the cells' datasheet capacity
+ * (what a full drain really takes out, so the module's loss can be measured), and free text.
+ */
+@Composable
+private fun ProductFields(draft: BankDraft, onChange: (BankDraft) -> Unit) {
+    fun digits(v: String, max: Int) = v.filter { it.isDigit() }.take(max)
+    fun decimal(v: String) = v.filter { it.isDigit() || it == '.' || it == ',' }.take(5)
+    Text(
+        "Product",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier.padding(top = Space.s),
+    )
+    OutlinedTextField(
+        value = draft.outputMah,
+        onValueChange = { onChange(draft.copy(outputMah = digits(it, 6))) },
+        label = { Text("Rated output") },
+        suffix = { Text("mAh @5V") },
+        singleLine = true,
+        isError = draft.outputError,
+        supportingText = {
+            Text(if (draft.outputError) "Must be between 100 and 200,000 mAh" else "Optional. What it can charge under ideal conditions, e.g. 20000")
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = draft.cellsMah,
+        onValueChange = { onChange(draft.copy(cellsMah = digits(it, 6))) },
+        label = { Text("Cell capacity (datasheet)") },
+        suffix = { Text("mAh") },
+        singleLine = true,
+        isError = draft.cellsMahError,
+        supportingText = {
+            Text(
+                if (draft.cellsMahError) "Must be between 100 and 200,000 mAh" else
+                    "Optional. All cells together, e.g. 10 × 3350 = 33500. Used to measure the module's loss",
+            )
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = draft.cells,
+        onValueChange = { onChange(draft.copy(cells = it.take(80))) },
+        label = { Text("Cells") },
+        placeholder = { Text("e.g. 10 × Panasonic NCR18650B, 1S10P") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = draft.module,
+        onValueChange = { onChange(draft.copy(module = it.take(80))) },
+        label = { Text("Module") },
+        placeholder = { Text("e.g. 22.5 W QC4+/PD3.0, 5 ports") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+        OutlinedTextField(
+            value = draft.ratedW,
+            onValueChange = { onChange(draft.copy(ratedW = decimal(it))) },
+            label = { Text("Max output") },
+            suffix = { Text("W") },
+            singleLine = true,
+            isError = draft.bankWattError,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = draft.cutoffV,
+            onValueChange = { onChange(draft.copy(cutoffV = decimal(it))) },
+            label = { Text("Cutoff") },
+            suffix = { Text("V") },
+            singleLine = true,
+            isError = draft.cutoffError,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.weight(1f),
+        )
+    }
+    OutlinedTextField(
+        value = draft.notes,
+        onValueChange = { onChange(draft.copy(notes = it.take(300))) },
+        label = { Text("Notes") },
+        minLines = 2,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }

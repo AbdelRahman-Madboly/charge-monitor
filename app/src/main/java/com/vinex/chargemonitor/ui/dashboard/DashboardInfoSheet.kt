@@ -52,18 +52,25 @@ internal fun DashboardInfoSheet(onDismiss: () -> Unit) {
                 "Per full bank",
                 "How many full phone charges one full bank gives: the median, over marked drains, of the " +
                     "percent added between Recharged and the next Ran empty. The bar compares it with what " +
-                    "the label promises (rated Wh × loss factor ÷ the phone battery's Wh).",
+                    "one full bank should give (cell Wh × efficiency ÷ the phone battery's Wh).",
             )
             Point(
-                "Real capacity",
-                "Energy delivered between Recharged and Ran empty, divided by the loss factor, against the " +
-                    "label. It appears after the first marked drain.",
+                "Output per full bank",
+                "Energy out of the bank's port between Recharged and Ran empty, as mAh at 5 V, against the " +
+                    "label's output rating. It appears after the first marked drain.",
+            )
+            Point(
+                "Module efficiency",
+                "A bank charged full and run to its cutoff gives all of its cells' energy (datasheet capacity " +
+                    "down to the cutoff). What did not come out of the port was lost in the module, nearly all " +
+                    "as heat. Enter the cell voltage on each mark: about 4.2 V when full, 3.0 V at cutoff. A " +
+                    "drain that did not start full is left out, so a partial recharge cannot read as loss.",
             )
             Point(
                 "Comparing banks",
                 "Banks are ranked by mAh delivered to the phone, including use while charging, so a bank " +
                     "used with the screen on is not ranked below one charged idle. Sort by Per full bank or " +
-                    "Real capacity to rank banks by capacity. These use Wh, not mAh: a mAh label only " +
+                    "Output vs label to rank banks by capacity. These use Wh, not mAh: a mAh label only " +
                     "compares with another rated at the same cell voltage.",
             )
             Point(

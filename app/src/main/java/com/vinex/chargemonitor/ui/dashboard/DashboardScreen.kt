@@ -61,7 +61,7 @@ import com.vinex.chargemonitor.ui.components.StatTile
 import com.vinex.chargemonitor.ui.theme.SeriesColors
 
 @Composable
-fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = viewModel()) {
+fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = viewModel(), onOpenBank: (Long) -> Unit = {}) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     var info by rememberSaveable { mutableStateOf(false) }
     var chartsOpen by rememberSaveable { mutableStateOf(false) }
@@ -102,11 +102,11 @@ fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = view
                 val rank = if (ui.tabCards.size > 1 && ui.sort != DashboardSort.NAME) index + 1 else null
                 key(card.source.id) {
                     when (card.source.kind) {
-                        SourceKind.POWER_BANK -> BankCard(
+                        SourceKind.POWER_BANK -> BankSummaryCard(
                             card,
                             rank,
-                            onMark = { kind -> vm.markBank(card.source.id, kind) },
-                            onUndo = { id -> vm.undoMark(id) },
+                            onMark = { m -> vm.markBank(card.source.id, m.kind, m.cellV, m.tMs, m.meterWh) },
+                            onOpen = { onOpenBank(card.source.id) },
                         )
                         SourceKind.CHARGER -> ChargerCard(card, rank)
                         SourceKind.LAPTOP, SourceKind.WIRELESS -> OtherCard(card, rank)
@@ -115,7 +115,7 @@ fun DashboardScreen(modifier: Modifier = Modifier, vm: DashboardViewModel = view
             }
         }
 
-        if (ui.cards.isNotEmpty()) IncludeUsedToggle(ui.includeUsed, vm::setIncludeUsed)
+        if (ui.tab == DashboardTab.CHARGERS && ui.cards.isNotEmpty()) IncludeUsedToggle(ui.includeUsed, vm::setIncludeUsed)
 
         if (ui.summary.sessions > 0) {
             SectionHeader("Charts") {
@@ -225,7 +225,7 @@ private fun IncludeUsedToggle(includeUsed: Boolean, onChange: (Boolean) -> Unit)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(end = Space.s)) {
                 Text("Include sessions used while charging", style = MaterialTheme.typography.bodyLarge)
-                Note("Affects capacity, power and speed. Phone charges always count every session.")
+                Note("Affects average power and speed. Phone charges and full drains always count every session.")
             }
             Switch(checked = includeUsed, onCheckedChange = onChange)
         }
@@ -309,7 +309,8 @@ private fun Charts(sessions: List<ChargeSession>, sources: List<PowerSource>, in
     }
 
     Panel {
-        val admitted = sessions.filter { includeUsed || !it.usedWhileCharging }
+        val chargerIds = sources.filter { it.kind == SourceKind.CHARGER }.map { it.id }.toSet()
+        val admitted = sessions.filter { it.sourceId !in chargerIds || includeUsed || !it.usedWhileCharging }
         Text("Average power per session", style = MaterialTheme.typography.titleSmall)
         BarChart(
             bars = admitted.map { s ->

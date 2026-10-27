@@ -371,7 +371,7 @@ private fun PowerFlowCard(ui: LiveUi, flow: EnergyModel.Flow, bank: PowerSource)
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Power flow", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            Tag("ESTIMATED")
+            Tag(if (ui.moduleEfficiency != null) "MEASURED LOSS" else "ESTIMATED")
         }
         FlowRow("From the cells", "${Format.watts(flow.cellsW)} W", strong = true)
         FlowRow("Bank module loss", "−${Format.watts(flow.bankLossW)} W")
@@ -382,12 +382,24 @@ private fun PowerFlowCard(ui: LiveUi, flow: EnergyModel.Flow, bank: PowerSource)
 
         Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
             SummaryCell("Efficiency now", Format.percent(flow.efficiency), "%", Modifier.weight(1f), MaterialTheme.colorScheme.primary)
-            SummaryCell("This session", Format.percent(session?.efficiency), "%", Modifier.weight(1f))
+            SummaryCell(
+                "This session",
+                Format.percent(session?.let { t -> ui.sessionCellsWh?.takeIf { it > 0.0 }?.let { t.wh.coerceAtLeast(0.0) / it } }),
+                "%",
+                Modifier.weight(1f),
+            )
         }
-        session?.takeIf { it.cellsWh > 0.0 }?.let { t ->
+        ui.moduleEfficiency?.let {
+            Text(
+                "Bank module ${Format.percent(it)} % efficient, measured from its full drains.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        session?.let { t -> ui.sessionCellsWh?.takeIf { it > 0.0 }?.let { cells -> t to cells } }?.let { (t, cells) ->
             val volts = bank.nominalV.takeIf { it > 0.0 } ?: 3.7
-            StatRow("Taken from the cells", "${Format.wh(t.cellsWh)} Wh · ${Format.mah(t.cellsWh / volts * 1000.0)} mAh")
-            StatRow("Lost on the way", "${Format.wh((t.cellsWh - t.wh.coerceAtLeast(0.0)).coerceAtLeast(0.0))} Wh")
+            StatRow("Taken from the cells", "${Format.wh(cells)} Wh · ${Format.mah(cells / volts * 1000.0)} mAh")
+            StatRow("Lost on the way", "${Format.wh((cells - t.wh.coerceAtLeast(0.0)).coerceAtLeast(0.0))} Wh")
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -408,7 +420,7 @@ private fun PowerFlowCard(ui: LiveUi, flow: EnergyModel.Flow, bank: PowerSource)
             }
             LevelBar(level = share.toFloat(), target = null, color = MaterialTheme.colorScheme.primary)
             Text(
-                "${Format.wh(ui.bankLeftWh)} of ${Format.wh(bank.ratedWh)} Wh label energy since Recharged; " +
+                "${Format.wh(ui.bankLeftWh)} of ${Format.wh(bank.usableCellWh)} Wh cell energy since Recharged; " +
                     "the module should show ${kotlin.math.ceil(share * 4).toInt().coerceIn(0, 4)} of 4 lights.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

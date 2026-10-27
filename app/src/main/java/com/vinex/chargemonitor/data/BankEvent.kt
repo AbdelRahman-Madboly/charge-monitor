@@ -34,4 +34,23 @@ data class BankEvent(
     val sourceId: Long,
     val tMs: Long,
     val kind: BankEventKind,
-)
+    /**
+     * Cell voltage measured at the pack when the mark was made, V; null when not measured. It
+     * tells a real full charge (about 4.2 V) from a partial one, and a real cutoff (about 3.0 V).
+     */
+    val cellV: Double? = null,
+    /** Inline USB meter energy for the whole drain, entered on Ran empty. */
+    val meterWh: Double? = null,
+) {
+    /** Null when no voltage was measured. */
+    val confirmsFull: Boolean? get() = cellV?.let { it >= FULL_V }
+    val confirmsEmpty: Boolean? get() = cellV?.let { it <= EMPTY_V }
+
+    companion object {
+        /** A resting Li-ion cell at or above this is fully charged (4.20 V less meter and rest drop). */
+        const val FULL_V = 4.15
+
+        /** At or below this a resting cell is at the module's cutoff. */
+        const val EMPTY_V = 3.20
+    }
+}

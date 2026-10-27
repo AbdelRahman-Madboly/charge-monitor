@@ -1,8 +1,15 @@
 package com.vinex.chargemonitor.ui.dashboard
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.material3.Button
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
+import com.vinex.chargemonitor.ui.bank.BankReport
+import com.vinex.chargemonitor.ui.components.StatTile
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import com.vinex.chargemonitor.ui.chart.ChartSeries
@@ -12,16 +19,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -53,240 +57,59 @@ import com.vinex.chargemonitor.ui.components.Space
 import com.vinex.chargemonitor.ui.components.Tag
 import com.vinex.chargemonitor.ui.theme.Readout
 
-/**
- * A power bank at a glance: phone charges so far, how much charge it has left since it was
- * recharged, what one full bank gives against the label, real capacity once a drain is marked,
- * and where the energy went. The working behind each figure sits under Details.
- */
+/** Compact bank summary; all test details live on the bank screen. */
 @Composable
-internal fun BankCard(
-    card: SourceCard,
-    rank: Int?,
-    onMark: (BankEventKind) -> Unit,
-    onUndo: (Long) -> Unit,
-) {
-    var details by rememberSaveable(card.source.id) { mutableStateOf(false) }
-    val capacity = card.capacity ?: StatsCalculator.CapacityEstimate.NONE
-    Panel {
-        CardHeader(card.source, rank, joinDot(ratedLabel(card.source), lastUsed(card.lastUsedMs)))
-        Hero(Format.fullCharges(card.fullCharges), "phone charges so far")
-
-        BankGauge(card)
-
-        val measured = capacity.cyclePhoneCharges
-        val promised = card.labelPhoneCharges
-        if (measured != null) {
-            Meter(
-                label = "Per full bank",
-                value = "${Format.f(measured, 2)}${promised?.let { " of ≈${Format.f(it, 1)}" } ?: ""}",
-                ratio = promised?.takeIf { it > 0.0 }?.let { measured / it },
+internal fun BankSummaryCard(card: SourceCard, rank: Int?, onMark: (MarkInput) -> Unit, onOpen: () -> Unit) {
+    var marking by rememberSaveable(card.source.id) { mutableStateOf(false) }
+    val c = card.capacity ?: StatsCalculator.CapacityEstimate.NONE
+    val next = if (card.lastMark?.kind == BankEventKind.RECHARGED) BankEventKind.EMPTY else BankEventKind.RECHARGED
+    Panel(Modifier.clickable(onClick = onOpen)) {
+        CardHeader(card.source, rank, ratedLabel(card.source))
+        Note(bankStatus(card))
+        Button(onClick = { marking = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (next == BankEventKind.RECHARGED) "Mark recharged" else "Mark ran empty")
+        }
+        val empty = card.lastMark?.kind == BankEventKind.EMPTY
+        val tile = Modifier.fillMaxWidth().fillMaxHeight()
+        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            StatTile(
+                "Output / full bank", c.cycleOutputMah?.let { Format.mah(it) } ?: "—", "", tile.weight(1f),
+                caption = "mAh @5V" + (c.outputRatio?.let { " · ${Format.percent(it)} % of rated" } ?: ""),
+            )
+            StatTile(
+                "Phone charges", c.cyclePhoneCharges?.let { Format.f(it, 2) } ?: "—", "", tile.weight(1f),
+                caption = "per full bank",
             )
         }
-        val ratio = capacity.ratioOfRated
-        val est = capacity.cycleMah
-        if (est != null) {
-            val rated = capacity.ratedMah?.let { " / ${Format.mah(it.toDouble())}" } ?: ""
-            Meter(
-                label = "Real capacity",
-                value = "${ratio?.let { "${Format.percent(it)} % · " } ?: ""}${Format.mah(est)}$rated mAh",
-                ratio = ratio,
+        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            StatTile(
+                "Module efficiency", c.moduleEfficiency?.let { Format.percent(it) } ?: "—", "%", tile.weight(1f),
+                caption = BankReport.efficiencyBasis(c),
             )
-        } else {
-            MeasureCallout(promised, capacity)
-        }
-
-        EnergyFlowBlock(card)
-
-        if (card.chargeHistory.size >= 2) ChargeHistoryChart(card)
-
-        StatLine(
-            energy(card.whIn),
-            card.sessionCount.takeIf { it > 0 }?.let { plural(it, "session") },
-            avgPower(card.avgW),
-        )
-
-        if (card.unconfirmedCount > 0) {
-            Note(
-                "${plural(card.unconfirmedCount, "session")} (+${Format.fullCharges(card.unconfirmedFullCharges)}) " +
-                    "not counted until you confirm the source in History.",
-                color = MaterialTheme.colorScheme.error,
+            StatTile(
+                "Bank charge", if (empty) "Empty" else card.chargeLeft?.let { Format.percent(it) } ?: "—",
+                if (empty || card.chargeLeft == null) "" else "%", tile.weight(1f),
+                caption = when {
+                    empty -> "marked ${Format.shortDay(card.lastMark!!.tMs)}"
+                    card.chargeLeft != null -> "estimated left"
+                    else -> "mark Recharged to start"
+                },
             )
         }
-
-        RefillMarks(card.lastMark, onMark, onUndo)
-
-        DetailsToggle(details) { details = !details }
-        if (details) BankDetails(card, capacity)
     }
+    if (marking) MarkDialog(null, next, onSave = { marking = false; onMark(it) }, onDelete = null, onDismiss = { marking = false })
 }
 
-/** Before the first marked drain: say how to measure, and how far into the current charge the bank is. */
-@Composable
-private fun MeasureCallout(promised: Double?, capacity: StatsCalculator.CapacityEstimate) {
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(Space.s), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-            Text(
-                "Mark a full drain to measure real capacity",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                "Tap Recharged when the bank is full, Ran empty when it dies." +
-                    (promised?.let { " The label promises ≈${Format.f(it, 1)} phone charges per full bank." } ?: ""),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun BankDetails(card: SourceCard, capacity: StatsCalculator.CapacityEstimate) {
-    val eff = card.efficiency?.let {
-        "${Format.percent(it)} % cells to battery, " +
-            if (card.efficiencyFromSessions) "from this bank's sessions" else "the model at a typical charge"
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-        card.labelPhoneCharges?.let { p ->
-            Note("Label promise: ≈${Format.f(p, 1)} phone charges per full bank${eff?.let { " ($it)" } ?: ""}.")
-        }
-        card.source.ratedWh?.let { Note("Rated energy: ${Format.wh(it)} Wh at ${Format.f(card.source.nominalV, 2)} V.") }
-        if (capacity.cycleMah != null) {
-            Note(
-                "Real capacity is the median cell energy of ${plural(capacity.completedCycles, "full drain")}." +
-                    (capacity.cycleBatteryWh?.let { " One full bank put ${Format.wh(it)} Wh into the phone battery." } ?: "") +
-                    if (capacity.skippedCycles > 0) " ${plural(capacity.skippedCycles, "drain")} left out." else "",
-            )
-        }
-        if (capacity.sessionsUsed > 0 && capacity.drawnWh > 0.0) {
-            val fulls = capacity.deliveredBankFulls?.let { " ≈ ${Format.f(it, 2)} bank-fulls" } ?: ""
-            Note("Taken from the cells so far: ${Format.wh(capacity.drawnWh)} Wh$fulls (est.).")
-        }
-        Note(
-            "Losses are worked out for every reading at the power it happened at: the bank's boost module is about " +
-                "89 to 91 % from 3 to 18 W (pack resistance included) and falls under 80 % below 0.5 W; the cable and phone charger about 91 %; " +
-                "and the phone's own draw while plugged in (set in Settings) is energy the bank gave that never " +
-                "reached the battery. That is why the slow end of a charge costs the bank far more per percent.",
-        )
-        if (card.usedExcluded > 0) {
-            Note("${plural(card.usedExcluded, "session")} used while charging left out of capacity and power.")
-        }
-    }
-}
-
-/**
- * Where the bank's energy went, in the order it flows: out of the cells (modelled), lost in the
- * bank's boost module, lost in the cable and the phone's charger, used by the phone while it
- * charged, and into the battery (measured). Efficiency is the last over the first.
- */
-@Composable
-private fun EnergyFlowBlock(card: SourceCard) {
-    val e = card.energy ?: return
-    if (e.cellsWh < 0.005) return
-    val volts = card.source.nominalV.takeIf { it > 0.0 } ?: 3.7
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(Space.s), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-            Text("Energy flow", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Figure(
-                "Taken from the cells",
-                "${Format.wh(e.cellsWh)} Wh",
-                "estimated · ${Format.mah(e.cellsWh / volts * 1000.0)} mAh at ${Format.f(volts, 1)} V",
-            )
-            Figure("Bank module loss", "−${Format.wh(e.bankLossWh)} Wh", "estimated, heat in the boost converter")
-            Figure("Cable and phone charger loss", "−${Format.wh(e.phoneLossWh)} Wh", "estimated")
-            if (e.phoneUseWh >= 0.005) {
-                Figure("Phone ran on while plugged in", "−${Format.wh(e.phoneUseWh)} Wh", "estimated from the screen state")
-            }
-            FlowBar(e)
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            val battery = card.delivery?.intoBatteryMah?.let { "measured · ${Format.mah(it)} mAh" } ?: "measured"
-            Figure("Into the phone battery", "${Format.wh(e.batteryWh)} Wh", battery)
-            e.efficiency?.let { Meter(label = "Efficiency, cells to battery", value = "${Format.percent(it)} %", ratio = it) }
-        }
-    }
-}
-
-/**
- * The bank's charge as a big percentage over a bar split into four, like the module's four level
- * lights, so the app's estimate can be checked against the lights at a glance. Before the first
- * Recharged mark there is nothing to count from, so it says so.
- */
-@Composable
-private fun BankGauge(card: SourceCard) {
-    val left = card.chargeLeft
-    val primary = MaterialTheme.colorScheme.primary
-    val low = MaterialTheme.colorScheme.error
-    val track = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(Space.s), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    "Bank charge",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f).padding(bottom = 4.dp),
-                )
-                Text(
-                    left?.let { Format.percent(it) } ?: "--",
-                    style = Readout.tile.copy(fontWeight = FontWeight.Bold),
-                    color = if (left != null && left < 0.15) low else MaterialTheme.colorScheme.onSurface,
-                )
-                Text(" %", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Canvas(Modifier.fillMaxWidth().height(14.dp)) {
-                val gap = 4.dp.toPx()
-                val seg = (size.width - gap * 3) / 4
-                val r = CornerRadius(3.dp.toPx())
-                for (i in 0 until 4) {
-                    val x = i * (seg + gap)
-                    drawRoundRect(track, topLeft = Offset(x, 0f), size = Size(seg, size.height), cornerRadius = r)
-                    val fill = ((left ?: 0.0) * 4 - i).coerceIn(0.0, 1.0).toFloat()
-                    if (fill > 0f) {
-                        drawRoundRect(
-                            if ((left ?: 0.0) < 0.15) low else primary,
-                            topLeft = Offset(x, 0f),
-                            size = Size(seg * fill, size.height),
-                            cornerRadius = r,
-                        )
-                    }
-                }
-            }
-            if (left != null) {
-                val lights = kotlin.math.ceil(left * 4).toInt().coerceIn(0, 4)
-                Text(
-                    listOfNotNull(
-                        card.phoneChargesLeft?.let { "≈${Format.f(it, 1)} phone charges left" },
-                        "module should show $lights of 4 lights",
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Text(
-                    "Charge the bank to full, then tap Recharged below to start counting.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
+internal fun bankStatus(card: SourceCard): String = when (card.lastMark?.kind) {
+    BankEventKind.RECHARGED -> "Drain ${(card.capacity?.drains?.size ?: 0) + 1} running since ${Format.shortDay(card.lastMark.tMs)}" +
+        (card.chargeLeft?.let { " · ~${Format.percent(it)} % left" } ?: "")
+    BankEventKind.EMPTY -> "Empty since ${Format.shortDay(card.lastMark.tMs)}: charge it full, then mark Recharged"
+    null -> "No marks yet"
 }
 
 /** The energy flow as one stacked bar: battery, phone use, cable and charger, bank module. */
 @Composable
-private fun FlowBar(e: StatsCalculator.EnergyTotals) {
+internal fun FlowBar(e: StatsCalculator.EnergyTotals) {
     val parts = listOf(
         Triple("Battery", e.batteryWh, MaterialTheme.colorScheme.primary),
         Triple("Phone use", e.phoneUseWh, SeriesColors.level),
@@ -323,7 +146,7 @@ private fun FlowBar(e: StatsCalculator.EnergyTotals) {
 
 /** Charge left since the last Recharged mark, one step per session, so a drain reads as a curve. */
 @Composable
-private fun ChargeHistoryChart(card: SourceCard) {
+internal fun ChargeHistoryChart(card: SourceCard) {
     val pts = card.chargeHistory
     Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
         Text("Charge left since Recharged", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -343,9 +166,9 @@ private fun ChargeHistoryChart(card: SourceCard) {
     }
 }
 
-/** One labelled mAh figure with how it was obtained underneath. */
+/** One labelled figure on one line, with how it was obtained under the label. */
 @Composable
-private fun Figure(label: String, value: String, how: String) {
+internal fun Figure(label: String, value: String, how: String) {
     Row(verticalAlignment = Alignment.Top) {
         Column(Modifier.weight(1f).padding(end = Space.s)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
@@ -362,40 +185,115 @@ private fun deliveredLine(d: PhoneLoad.Delivery?): String? {
 }
 
 @Composable
-private fun RefillMarks(lastMark: BankEvent?, onMark: (BankEventKind) -> Unit, onUndo: (Long) -> Unit) {
-    var confirmUndo by rememberSaveable { mutableStateOf(false) }
+internal fun RefillMarks(
+    lastMark: BankEvent?,
+    marks: List<BankEvent>,
+    onMark: (MarkInput) -> Unit,
+    onEditMark: (BankEvent) -> Unit,
+    onDeleteMark: (Long) -> Unit,
+) {
+    var adding by rememberSaveable { mutableStateOf<BankEventKind?>(null) }
+    var listOpen by rememberSaveable { mutableStateOf(false) }
+    var editingId by rememberSaveable { mutableStateOf<Long?>(null) }
     val compact = PaddingValues(horizontal = Space.m, vertical = Space.xs)
     Row(horizontalArrangement = Arrangement.spacedBy(Space.s), verticalAlignment = Alignment.CenterVertically) {
         OutlinedButton(
-            onClick = { onMark(BankEventKind.RECHARGED) },
+            onClick = { adding = BankEventKind.RECHARGED },
             contentPadding = compact,
             modifier = Modifier.weight(1f),
         ) { Text("Recharged") }
         OutlinedButton(
-            onClick = { onMark(BankEventKind.EMPTY) },
+            onClick = { adding = BankEventKind.EMPTY },
             contentPadding = compact,
             modifier = Modifier.weight(1f),
         ) { Text("Ran empty") }
     }
-    if (lastMark != null) {
-        val what = if (lastMark.kind == BankEventKind.RECHARGED) "Recharged" else "Ran empty"
-        val whenText = "${Format.shortDay(lastMark.tMs)} ${Format.clock(lastMark.tMs)}"
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Note("Last marked: $what, $whenText", modifier = Modifier.weight(1f))
-            TextButton(onClick = { confirmUndo = true }) { Text("Undo") }
-        }
-        if (confirmUndo) {
-            AlertDialog(
-                onDismissRequest = { confirmUndo = false },
-                title = { Text("Remove this mark?") },
-                text = { Text("\"$what\" from $whenText will be removed and capacity recalculated without it.") },
-                confirmButton = {
-                    TextButton(onClick = { confirmUndo = false; onUndo(lastMark.id) }) {
-                        Text("Remove", color = MaterialTheme.colorScheme.error)
-                    }
-                },
-                dismissButton = { TextButton(onClick = { confirmUndo = false }) { Text("Cancel") } },
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val last = lastMark?.let { m ->
+            val what = if (m.kind == BankEventKind.RECHARGED) "Recharged" else "Ran empty"
+            "Last marked: $what, ${Format.shortDay(m.tMs)} ${Format.clock(m.tMs)}" + (m.cellV?.let { ", ${Format.f(it, 2)} V" } ?: "")
+        } ?: "No marks yet."
+        Note(last, modifier = Modifier.weight(1f))
+        TextButton(onClick = { listOpen = true }) { Text("Edit marks") }
+    }
+
+    adding?.let { kind ->
+        MarkDialog(
+            initial = null,
+            kind = kind,
+            onSave = { adding = null; onMark(it) },
+            onDelete = null,
+            onDismiss = { adding = null },
+        )
+    }
+    if (listOpen) {
+        MarksDialog(
+            marks = marks,
+            onEdit = { editingId = it.id; listOpen = false },
+            onAdd = { listOpen = false; adding = BankEventKind.RECHARGED },
+            onDismiss = { listOpen = false },
+        )
+    }
+    editingId?.let { id ->
+        val mark = marks.firstOrNull { it.id == id }
+        if (mark == null) {
+            editingId = null
+        } else {
+            MarkDialog(
+                initial = mark,
+                kind = mark.kind,
+                onSave = { m -> editingId = null; onEditMark(mark.copy(kind = m.kind, tMs = m.tMs, cellV = m.cellV, meterWh = m.meterWh)) },
+                onDelete = { editingId = null; onDeleteMark(mark.id) },
+                onDismiss = { editingId = null },
             )
+        }
+    }
+}
+
+/**
+ * The product as it is sold: the advertised capacity, the rated output under ideal conditions,
+ * what is inside, and the measured result against each claim.
+ */
+@Composable
+internal fun ProductBlock(source: PowerSource, capacity: StatsCalculator.CapacityEstimate) {
+    val rows = buildList {
+        source.ratedMah?.takeIf { it > 0 }?.let {
+            add("Advertised capacity" to "${Format.mah(it.toDouble())} mAh @${Format.f(source.nominalV, 1)}V · ${Format.wh(source.ratedWh)} Wh")
+        }
+        source.outputMah?.takeIf { it > 0 }?.let {
+            add("Rated output (ideal)" to "${Format.mah(it.toDouble())} mAh @5V · ${Format.wh(source.outputWh)} Wh")
+        }
+        source.cellsMah?.takeIf { it > 0 }?.let { add("Cell capacity (datasheet)" to "${Format.mah(it.toDouble())} mAh") }
+        source.cells?.takeIf { it.isNotBlank() }?.let { add("Cells" to it) }
+        source.module?.takeIf { it.isNotBlank() }?.let { add("Module" to it) }
+        source.ratedW?.let { add("Max output" to "${Format.watts(it)} W") }
+        source.cutoffV?.let { add("Cutoff" to "${Format.f(it, 1)} V") }
+    }
+    if (rows.isEmpty() && source.notes.isNullOrBlank()) return
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(Space.s), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+            Text("Product", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            rows.forEach { (label, value) ->
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(0.45f).padding(end = Space.s),
+                    )
+                    Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(0.55f))
+                }
+            }
+            source.notes?.takeIf { it.isNotBlank() }?.let { Note(it) }
+            capacity.cycleOutputMah?.let { out ->
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                val vsOutput = source.outputMah?.takeIf { it > 0 }?.let { " = ${Format.percent(out / it)} % of the rated output" } ?: ""
+                Note("Estimated full-bank output: ${Format.mah(out)} mAh @5V per full bank$vsOutput.")
+            }
         }
     }
 }
@@ -479,18 +377,28 @@ private fun Hero(value: String, caption: String) {
     }
 }
 
-/** Label and value on one line, with a bar under them when there is something to measure against. */
+/** Keep each readout on its own line whenever the pair exceeds the available width. */
 @Composable
-private fun Meter(label: String, value: String, ratio: Double?) {
+internal fun Meter(label: String, value: String, ratio: Double?) {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val labelStyle = MaterialTheme.typography.bodyMedium
+    val valueStyle = Readout.small.copy(fontWeight = FontWeight.SemiBold)
     Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            Text(value, style = Readout.small.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.onSurface)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val required = measurer.measure(label, labelStyle, softWrap = false).size.width +
+                measurer.measure(value, valueStyle, softWrap = false).size.width + with(density) { Space.m.toPx() }
+            if (required <= with(density) { maxWidth.toPx() }) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(label, style = labelStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(value, style = valueStyle)
+                }
+            } else {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                    Text(label, style = labelStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(value, style = valueStyle, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+                }
+            }
         }
         if (ratio != null && ratio.isFinite()) {
             LinearProgressIndicator(
@@ -514,14 +422,6 @@ private fun StatLine(vararg parts: String?) {
 }
 
 @Composable
-private fun DetailsToggle(open: Boolean, onToggle: () -> Unit) {
-    TextButton(onClick = onToggle, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
-        Text(if (open) "Hide details" else "Details", style = MaterialTheme.typography.labelLarge)
-        Icon(if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, contentDescription = null)
-    }
-}
-
-@Composable
 internal fun Note(
     text: String,
     modifier: Modifier = Modifier,
@@ -534,8 +434,9 @@ internal fun plural(n: Int, word: String) = "$n $word${if (n == 1) "" else "s"}"
 
 private fun ratedLabel(source: PowerSource): String? {
     val mah = source.ratedMah?.takeIf { it > 0 } ?: return null
-    val wh = source.ratedWh?.let { " · ${Format.wh(it)} Wh" } ?: ""
-    return "${Format.mah(mah.toDouble())} mAh$wh"
+    val output = source.outputMah?.takeIf { it > 0 }?.let { " · ${Format.mah(it.toDouble())} mAh @5V" }
+        ?: source.ratedWh?.let { " · ${Format.wh(it)} Wh" } ?: ""
+    return "${Format.mah(mah.toDouble())} mAh$output"
 }
 
 private fun lastUsed(tMs: Long?): String? = tMs?.let { "used ${Format.shortDay(it)}" }

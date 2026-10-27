@@ -13,6 +13,7 @@ import com.vinex.chargemonitor.data.PowerSource
 import com.vinex.chargemonitor.data.Repository
 import com.vinex.chargemonitor.data.SettingsStore
 import com.vinex.chargemonitor.data.SourceKind
+import com.vinex.chargemonitor.stats.CellOcv
 import com.vinex.chargemonitor.stats.EnergyModel
 import com.vinex.chargemonitor.stats.StatsCalculator
 import com.vinex.chargemonitor.ui.SessionActions
@@ -42,12 +43,16 @@ data class LiveUi(
     /** The current reading run through the energy model; null when not plugged in. */
     val flow: EnergyModel.Flow? = null,
     /**
-     * A power bank marked Recharged last: label energy left, Wh, counting the open session, and
+     * A power bank marked Recharged last: cell energy left of a full drain, Wh, counting the open session, and
      * the phone charges that holds at the efficiency so far. Null otherwise.
      */
     val bankLeftWh: Double? = null,
     val bankLeftShare: Double? = null,
     val phoneChargesLeft: Double? = null,
+    /** The bank module's efficiency measured from full drains; null while the model's default is used. */
+    val moduleEfficiency: Double? = null,
+    /** Cell energy of the open session at that efficiency, Wh; null when not on a bank. */
+    val sessionCellsWh: Double? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -147,24 +152,33 @@ class LiveViewModel(
         design: Int,
     ): LiveUi {
         val snap = live.snapshot?.takeIf { it.isPlugged } ?: return this
-        val flow = EnergyModel.flow(snap.powerW, snap.screenOn, model)
-        val bank = live.source?.takeIf { it.kind == SourceKind.POWER_BANK } ?: return copy(flow = flow)
+        val modelled = EnergyModel.flow(snap.powerW, snap.screenOn, model)
+        val bank = live.source?.takeIf { it.kind == SourceKind.POWER_BANK } ?: return copy(flow = modelled)
+        // The module efficiency measured from this bank's drains replaces the model's default, and a
+        // USB meter's calibration of the port side applies to the running session like to closed ones.
+        val estimate = StatsCalculator.bankCapacityEstimate(sessions, bank, events, model)
+        val moduleEff = estimate.moduleEfficiency
+        val scale = estimate.portScale
+        val scaled = modelled.copy(portW = modelled.portW * scale, cellsW = modelled.cellsW * scale)
+        val flow = moduleEff?.let { e -> scaled.copy(cellsW = scaled.portW / e) } ?: scaled
+        val now = live.session
+        val nowCells = now?.let { n -> moduleEff?.let { n.portWh * scale / it } ?: n.cellsWh * scale }
+        val base = copy(flow = flow, moduleEfficiency = moduleEff, sessionCellsWh = nowCells)
         val mark = events.filter { it.sourceId == bank.id }.maxByOrNull { it.tMs }
-        val rated = bank.ratedWh
-        if (mark?.kind != BankEventKind.RECHARGED || rated == null) return copy(flow = flow)
+        val rated = bank.usableCellWh
+        if (mark?.kind != BankEventKind.RECHARGED || rated == null) return base
         val closed = sessions.filter {
-            it.sourceId == bank.id && !it.isOpen && !it.mock && it.sourceConfirmed && it.startMs >= mark.tMs &&
+            it.sourceId == bank.id && !it.isOpen && !it.mock && it.sourceConfirmed && (it.endMs ?: it.startMs) > mark.tMs &&
                 it.id != live.sessionId
         }
-        val past = StatsCalculator.energy(closed, model)
-        val now = live.session
-        val used = past.cellsWh + (now?.cellsWh ?: 0.0)
-        val left = (rated - used).coerceAtLeast(0.0)
+        val past = StatsCalculator.energy(closed, model, moduleEff, scale)
+        val used = past.cellsWh + (nowCells ?: 0.0)
+        // A Recharged mark below full starts the count from the voltage's share of the cells.
+        val left = (rated * CellOcv.energyFraction(mark.cellV ?: 4.20) - used).coerceAtLeast(0.0)
         val battery = past.batteryWh + (now?.wh?.coerceAtLeast(0.0) ?: 0.0)
         val eff = if (used >= MIN_EFF_WH) battery / used else EnergyModel.efficiencyAt(EnergyModel.TYPICAL_BATTERY_W, model)
         val phoneWh = design.takeIf { it > 0 }?.let { it * StatsCalculator.PHONE_NOMINAL_V / 1000.0 }
-        return copy(
-            flow = flow,
+        return base.copy(
             bankLeftWh = left,
             bankLeftShare = left / rated,
             phoneChargesLeft = phoneWh?.let { left * eff / it },

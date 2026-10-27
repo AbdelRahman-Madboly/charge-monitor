@@ -29,7 +29,8 @@ class ChargeMonitorApp : Application() {
     }
 
     /**
-     * Adds any preset bank or charger this install has not seen yet, and makes the main charger
+     * Adds any preset bank or charger this install has not seen yet, fills preset product details
+     * into existing rows where they are still empty, and makes the main charger
      * the prompt's charger unless one was already chosen. The version is recorded only after
      * the inserts succeed, so a failure is retried on the next launch rather than lost.
      */
@@ -45,6 +46,7 @@ class ChargeMonitorApp : Application() {
                         settings.lastChargerId.set(id)
                     }
                 }
+                SourcePresets.detailsToFill(repository.allSources()).forEach { repository.updateSource(it) }
                 settings.sourcePresetsVersion.set(SourcePresets.VERSION)
             }.onFailure { Log.w("SourcePresets", "could not add preset sources", it) }
         }

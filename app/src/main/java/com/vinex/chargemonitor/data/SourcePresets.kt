@@ -16,18 +16,32 @@ object SourcePresets {
         val ratedMah: Int? = null,
         val nominalV: Double = 3.7,
         val ratedW: Double? = null,
+        val outputMah: Int? = null,
+        val cellsMah: Int? = null,
+        val cells: String? = null,
+        val module: String? = null,
+        val cutoffV: Double? = null,
+        val notes: String? = null,
     )
 
     /**
      * PB-1 v1, serial 0001: ten new Panasonic NCR18650B in parallel (1S10P) behind a 22.5 W
-     * QC4+/PD3.0 five-port module. Rated as the product label states it: 34,000 mAh at 3.6 V,
-     * about 122 Wh of cell energy (datasheet typical 3,350 mAh a cell, minimum 3,200).
+     * QC4+/PD3.0 five-port module. Advertised as the product label states it: 34,000 mAh at
+     * 3.6 V, and 20,000 mAh at 5 V of output under ideal conditions. The cells' datasheet
+     * typical is 3,350 mAh each (minimum 3,200), 33,500 mAh together.
      */
     val PB1_V1_SN0001 = Preset(
         name = "PB-1 v1 SN0001",
         kind = SourceKind.POWER_BANK,
         ratedMah = 34_000,
         nominalV = 3.6,
+        ratedW = 22.5,
+        outputMah = 20_000,
+        cellsMah = 33_500,
+        cells = "10 × Panasonic NCR18650B, 1S10P",
+        module = "22.5 W QC4+/PD3.0/PPS, 5 ports (SW6206 class)",
+        cutoffV = 2.9,
+        notes = "Under ideal conditions charges 20,000 mAh at 5 V.",
     )
 
     /** Anker Zolo 1C 30 W USB-C wall charger with the Anker A8060 240 W C-to-C cable. */
@@ -35,8 +49,8 @@ object SourcePresets {
 
     val ALL: List<Preset> = listOf(PB1_V1_SN0001, ANKER_ZOLO_30W)
 
-    /** Bumped when [ALL] gains a preset, so the new one is offered once to existing installs. */
-    const val VERSION = 3
+    /** Bumped when [ALL] gains a preset or new details, so they reach existing installs once. */
+    const val VERSION = 4
 
     /** The phone's main charger: the one the "Connected to?" prompt offers by default. */
     val MAIN_CHARGER: Preset = ANKER_ZOLO_30W
@@ -59,7 +73,31 @@ object SourcePresets {
                 nominalV = p.nominalV,
                 colorArgb = color,
                 ratedW = p.ratedW,
+                outputMah = p.outputMah,
+                cellsMah = p.cellsMah,
+                cells = p.cells,
+                module = p.module,
+                cutoffV = p.cutoffV,
+                notes = p.notes,
             )
         }
+    }
+
+    /**
+     * Existing rows that match a preset by name, with the preset's product details filled into
+     * the fields still empty. A field the user already set is never overwritten.
+     */
+    fun detailsToFill(existing: List<PowerSource>): List<PowerSource> = existing.mapNotNull { s ->
+        val p = ALL.firstOrNull { it.name.equals(s.name.trim(), ignoreCase = true) && it.kind == s.kind } ?: return@mapNotNull null
+        val filled = s.copy(
+            ratedW = s.ratedW ?: p.ratedW,
+            outputMah = s.outputMah ?: p.outputMah,
+            cellsMah = s.cellsMah ?: p.cellsMah,
+            cells = s.cells ?: p.cells,
+            module = s.module ?: p.module,
+            cutoffV = s.cutoffV ?: p.cutoffV,
+            notes = s.notes ?: p.notes,
+        )
+        filled.takeIf { it != s }
     }
 }

@@ -29,7 +29,7 @@ class DashboardSortTest {
         whIn = whIn,
         sessionCount = 1,
         avgW = avgW,
-        capacity = StatsCalculator.CapacityEstimate.NONE.copy(ratioOfRated = ratio, cyclePhoneCharges = cycle),
+        capacity = StatsCalculator.CapacityEstimate.NONE.copy(outputRatio = ratio, cyclePhoneCharges = cycle),
         usedExcluded = 0,
         labelPhoneCharges = label,
         charger = peakW?.let { StatsCalculator.ChargerStats(it, null, null, 0) },
@@ -157,8 +157,10 @@ class ChargeHistoryTest {
         )
         org.junit.Assert.assertEquals(listOf(100L, 200L, 400L), h.map { it.first })
         org.junit.Assert.assertEquals(1.0, h[0].second, 1e-9)
-        org.junit.Assert.assertEquals(0.5, h[1].second, 1e-9) // 36 Wh label, 18 used
-        org.junit.Assert.assertEquals(0.25, h[2].second, 1e-9)
+        // 36 Wh label, 34.56 Wh down to the cutoff; 18 then 27 used.
+        val full = 36.0 * com.vinex.chargemonitor.data.PowerSource.USABLE_TO_CUTOFF
+        org.junit.Assert.assertEquals(1 - 18.0 / full, h[1].second, 1e-9)
+        org.junit.Assert.assertEquals(1 - 27.0 / full, h[2].second, 1e-9)
     }
 
     @org.junit.Test

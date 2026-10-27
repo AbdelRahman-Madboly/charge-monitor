@@ -36,6 +36,7 @@ import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import com.vinex.chargemonitor.LiveBus
 import com.vinex.chargemonitor.ServiceLocator
+import com.vinex.chargemonitor.ui.bank.BankDetailScreen
 import com.vinex.chargemonitor.ui.history.SessionDetailScreen
 import com.vinex.chargemonitor.ui.onboarding.OnboardingScreen
 import com.vinex.chargemonitor.R
@@ -53,6 +54,7 @@ enum class Tab(val route: String, @StringRes val label: Int, val icon: ImageVect
     SETTINGS("settings", R.string.tab_settings, Icons.Filled.Settings),
 }
 
+private const val BANK_ROUTE = "bank/{id}"
 private const val SESSION_ROUTE = "session/{id}"
 
 /**
@@ -76,7 +78,7 @@ fun AppScaffold(pickSourceFor: Long? = null, onPickSourceHandled: () -> Unit = {
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination
 
-    val onTab = current?.route != SESSION_ROUTE
+    val onTab = current?.route != SESSION_ROUTE && current?.route != BANK_ROUTE
     var livePickerRequested by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(pickSourceFor) {
@@ -132,8 +134,11 @@ fun AppScaffold(pickSourceFor: Long? = null, onPickSourceHandled: () -> Unit = {
                     onPickerOpened = { livePickerRequested = false },
                 )
             }
-            composable(Tab.DASHBOARD.route) { DashboardScreen() }
+            composable(Tab.DASHBOARD.route) { DashboardScreen(onOpenBank = { nav.navigate("bank/$it") }) }
             composable(Tab.HISTORY.route) { HistoryScreen(onOpenSession = { nav.navigate("session/$it") }) }
+            composable(BANK_ROUTE, arguments = listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+                BankDetailScreen(bankId = entry.arguments?.getLong("id") ?: 0L, onBack = { nav.popBackStack() })
+            }
             composable(SESSION_ROUTE, arguments = listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                 SessionDetailScreen(
                     sessionId = entry.arguments?.getLong("id") ?: 0L,

@@ -147,6 +147,9 @@ interface BankEventDao {
     @Query("SELECT * FROM bank_event ORDER BY tMs")
     fun observeAll(): Flow<List<BankEvent>>
 
+    @Update
+    suspend fun update(event: BankEvent)
+
     @Query("DELETE FROM bank_event WHERE id = :id")
     suspend fun delete(id: Long)
 }

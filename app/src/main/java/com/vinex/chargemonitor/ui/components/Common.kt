@@ -79,9 +79,9 @@ fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> 
     }
 }
 
-/** Small labelled readout: caption above, tabular value with unit. */
+/** Small labelled readout: label above, tabular value with unit, and an optional [caption] under it. */
 @Composable
-fun StatTile(label: String, value: String, unit: String, modifier: Modifier = Modifier, accent: Color? = null) {
+fun StatTile(label: String, value: String, unit: String, modifier: Modifier = Modifier, accent: Color? = null, caption: String? = null) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(Corners.tile),
@@ -100,6 +100,9 @@ fun StatTile(label: String, value: String, unit: String, modifier: Modifier = Mo
                         modifier = Modifier.padding(bottom = 3.dp),
                     )
                 }
+            }
+            caption?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

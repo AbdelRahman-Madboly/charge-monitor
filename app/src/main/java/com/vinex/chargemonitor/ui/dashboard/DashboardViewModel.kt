@@ -2,6 +2,7 @@ package com.vinex.chargemonitor.ui.dashboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vinex.chargemonitor.ui.bank.BankReport
 import com.vinex.chargemonitor.ServiceLocator
 import com.vinex.chargemonitor.data.BankEvent
 import com.vinex.chargemonitor.data.BankEventKind
@@ -76,6 +77,8 @@ data class SourceCard(
     val phoneChargesLeft: Double? = null,
     /** Banks marked Recharged last: charge left (0..1) at the mark and after each session since. */
     val chargeHistory: List<Pair<Long, Double>> = emptyList(),
+    /** Banks: every refill mark, oldest first, for the marks editor. */
+    val marks: List<BankEvent> = emptyList(),
 )
 
 /** Totals over every closed, non-mock session, for the summary strip. */
@@ -184,10 +187,15 @@ class DashboardViewModel(
 
     fun setIncludeUsed(include: Boolean) = settings.includeUsedWhileCharging.set(include)
 
-    fun markBank(sourceId: Long, kind: BankEventKind) {
+    /** A mark now, or at [tMs] for one entered after the fact; [cellV] is the measured cell voltage. */
+    fun markBank(sourceId: Long, kind: BankEventKind, cellV: Double?, tMs: Long = System.currentTimeMillis(), meterWh: Double? = null) {
         viewModelScope.launch {
-            repository.addBankEvent(BankEvent(sourceId = sourceId, tMs = System.currentTimeMillis(), kind = kind))
+            repository.addBankEvent(BankEvent(sourceId = sourceId, tMs = tMs, kind = kind, cellV = cellV, meterWh = meterWh))
         }
+    }
+
+    fun updateMark(event: BankEvent) {
+        viewModelScope.launch { repository.updateBankEvent(event) }
     }
 
     fun undoMark(eventId: Long) {
@@ -218,47 +226,25 @@ class DashboardViewModel(
         val shown = sources.filter { s -> bySource.containsKey(s.id) || (!s.builtIn && !s.archived) }.sortedWith(compareBy<PowerSource> { it.kind.ordinal }.thenBy { it.builtIn }.thenBy { it.name.lowercase() })
 
         val cards = shown.map { s ->
-            val isBank = s.kind == SourceKind.POWER_BANK
-            val all = bySource[s.id].orEmpty()
-            // A guessed source must not feed a bank; built-ins keep every session.
-            val own = if (isBank) all.filter { it.sourceConfirmed } else all
-            val unconfirmed = if (isBank) all.filterNot { it.sourceConfirmed } else emptyList()
-            val admitted = own.filter { includeUsed || !it.usedWhileCharging }
+            val own = bySource[s.id].orEmpty()
+            if (s.countsTowardBank) {
+                return@map BankReport.build(s, closed, events, model, designMah, deliveryOf(own.filter { it.sourceConfirmed }))
+            }
+            val admitted = own.filter { s.kind != SourceKind.CHARGER || includeUsed || !it.usedWhileCharging }
             val fullCharges = StatsCalculator.fullChargeEquivalents(own)
             val delivery = deliveryOf(own)
-            val capacity = if (isBank) StatsCalculator.bankCapacityEstimate(all, s, includeUsed, events, model) else null
-            val measuredEff = capacity?.efficiency?.takeIf { capacity.drawnWh >= MIN_MEASURED_WH }
-            val eff = if (isBank) measuredEff ?: EnergyModel.efficiencyAt(EnergyModel.TYPICAL_BATTERY_W, model) else null
-            val lastMark = if (isBank) events.lastOrNull { it.sourceId == s.id } else null
-            val left = remaining(s, capacity, lastMark)
             SourceCard(
                 source = s,
                 fullCharges = fullCharges,
                 whIn = own.sumOf { it.whIn },
                 sessionCount = own.size,
                 avgW = admitted.takeIf { it.isNotEmpty() }?.map { it.avgW }?.average(),
-                capacity = capacity,
-                usedExcluded = if (includeUsed) 0 else own.count { it.usedWhileCharging },
-                unconfirmedCount = unconfirmed.size,
-                unconfirmedFullCharges = StatsCalculator.fullChargeEquivalents(unconfirmed),
-                lastMark = lastMark,
-                charger = if (s.kind == SourceKind.CHARGER) {
-                    StatsCalculator.chargerStats(own, s.ratedW, includeUsed)
-                } else {
-                    null
-                },
-                labelPhoneCharges = eff?.let { StatsCalculator.labelPhoneCharges(s, designMah, it) },
-                lastUsedMs = all.maxOfOrNull { it.endMs ?: it.startMs },
+                capacity = null,
+                usedExcluded = if (s.kind != SourceKind.CHARGER || includeUsed) 0 else own.count { it.usedWhileCharging },
+                charger = if (s.kind == SourceKind.CHARGER) StatsCalculator.chargerStats(own, s.ratedW, includeUsed) else null,
+                lastUsedMs = own.maxOfOrNull { it.endMs ?: it.startMs },
                 delivery = delivery,
                 fairPhoneCharges = fairCharges(fullCharges, delivery, designMah),
-                energy = if (isBank) StatsCalculator.energy(own, model) else null,
-                efficiency = eff,
-                efficiencyFromSessions = measuredEff != null,
-                chargeLeft = left?.let { wh -> s.ratedWh?.let { wh / it } },
-                chargeHistory = chargeHistory(s, own, lastMark, model),
-                phoneChargesLeft = left?.let { wh ->
-                    eff?.let { e -> designMah?.let { wh * e / (it * StatsCalculator.PHONE_NOMINAL_V / 1000.0) } }
-                },
             )
         }
 
@@ -291,36 +277,25 @@ class DashboardViewModel(
         const val MIN_MEASURED_WH = 1.0
 
         /**
-         * Label energy, Wh, a bank still holds when its latest mark is Recharged: the rating less
-         * the cell energy the closed sessions since then took. Null otherwise.
+         * Cell energy, Wh, a bank still holds when its latest mark is Recharged: a full drain's
+         * cell energy less what the closed sessions since then took. Null otherwise.
          */
         fun remaining(bank: PowerSource, capacity: StatsCalculator.CapacityEstimate?, lastMark: BankEvent?): Double? {
-            if (lastMark?.kind != BankEventKind.RECHARGED) return null
-            val rated = bank.ratedWh ?: return null
-            val used = capacity?.sinceRechargeCellsWh ?: 0.0
-            return (rated - used).coerceAtLeast(0.0)
+            return BankReport.remaining(bank, capacity, lastMark)
         }
 
         /**
-         * Charge left as a share of the label after each of [sessions] that ended since
-         * [lastMark], starting at 1 on the mark itself; empty unless the mark is Recharged.
+         * Charge left as a share of a full drain after each of [sessions] that ended since
+         * [lastMark], starting at its resting voltage fraction; empty unless the mark is Recharged.
          */
         fun chargeHistory(
             bank: PowerSource,
             sessions: List<ChargeSession>,
             lastMark: BankEvent?,
             model: EnergyModel.Params,
+            moduleEff: Double? = null,
         ): List<Pair<Long, Double>> {
-            if (lastMark?.kind != BankEventKind.RECHARGED) return emptyList()
-            val rated = bank.ratedWh ?: return emptyList()
-            var used = 0.0
-            val after = sessions.filter { !it.isOpen && !it.mock && it.startMs >= lastMark.tMs }
-                .sortedBy { it.endMs }
-                .map { s ->
-                    used += StatsCalculator.cellsWh(s, model)
-                    (s.endMs ?: s.startMs) to ((rated - used) / rated).coerceAtLeast(0.0)
-                }
-            return listOf(lastMark.tMs to 1.0) + after
+            return BankReport.chargeHistory(bank, sessions, lastMark, model, moduleEff)
         }
 
         /**
@@ -346,7 +321,7 @@ class DashboardViewModel(
                 DashboardSort.PHONE_CHARGES -> { c -> c.fullCharges }
                 DashboardSort.DELIVERED_MAH -> { c -> c.delivery?.deliveredMah?.takeIf { it > 0.0 } }
                 DashboardSort.PER_FULL_BANK -> { c -> c.capacity?.cyclePhoneCharges ?: c.labelPhoneCharges }
-                DashboardSort.REAL_CAPACITY -> { c -> c.capacity?.ratioOfRated }
+                DashboardSort.REAL_CAPACITY -> { c -> c.capacity?.outputRatio }
                 DashboardSort.PEAK_POWER -> { c -> c.charger?.peakW }
                 DashboardSort.AVG_POWER -> { c -> c.avgW?.takeIf { it > 0.0 } }
                 DashboardSort.SPEED -> { c -> c.charger?.pctPerHour }
@@ -400,7 +375,7 @@ enum class DashboardSort(val label: String) {
     DELIVERED_MAH("Delivered mAh"),
     PHONE_CHARGES("Phone charges"),
     PER_FULL_BANK("Per full bank"),
-    REAL_CAPACITY("Real capacity"),
+    REAL_CAPACITY("Output vs label"),
     PEAK_POWER("Peak power"),
     AVG_POWER("Average power"),
     SPEED("Charging speed"),
