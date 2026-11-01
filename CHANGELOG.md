@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Released under the MIT license.
+- README: Status section and a note on preset sources.
+- CI runs `./gradlew test assembleDebug` and the icon generator tests.
+
 ## v1.0.0 - 2026-11-01
 
 First finished version. Merges `feat/ui-refresh` and `feat/measured-module-loss` into `main`.

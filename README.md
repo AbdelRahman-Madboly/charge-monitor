@@ -10,10 +10,14 @@ the label, and what current, voltage and wattage each charger delivers.
 The design and its reasoning are in
 [`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
 
-Status: v1.0.0, finished personal tool, running on a Galaxy A54 (Android 16). Live, Dashboard,
-History, the bank screen and Settings work end to end; 246 JVM tests and 12 icon generator tests
-pass. Not yet checked on a device: the home-screen widget, CSV export, and Samsung's fast-charge
-flag.
+## Status
+
+v1.0.0 plus the unreleased changes in CHANGELOG.md. Built as a personal tool and used daily on one
+Samsung phone (Android 16). Live, Dashboard, History, the bank screen and Settings work end to
+end; 246 JVM tests and 12 icon generator tests pass. Not yet checked on a device: the home-screen
+widget, CSV export, and Samsung's fast-charge flag. Other phones report charge current in
+different units and signs; `CurrentNormalizer` handles the common cases, but a phone it has not
+seen may need a setting.
 
 | Live | Dashboard | History |
 |---|---|---|
@@ -58,9 +62,9 @@ Screenshots are from the emulator with mock data.
 
 ## Preset sources
 
-A new install, and the first launch after an upgrade, adds the sources under test once
-(`SourcePresets`): the 3S8P pack from the 18650 tester, a 1S10P NCR18650B bank and the Anker
-Zolo 30 W charger. A preset whose name is already taken is skipped, and existing rows are never
+A new install, and the first launch after an upgrade, adds the sources listed in
+`SourcePresets` once: a home-built 1S10P NCR18650B bank and a 30 W USB-C wall charger. Edit that
+file to ship your own. A preset whose name is already taken is skipped, and existing rows are never
 changed. The Appearance setting picks System, Light or Dark.
 
 ## Build
@@ -113,6 +117,10 @@ uv run --no-project --with pillow --with pytest python tools/glyphgen/test_gener
 `tools/glyphgen/preview.png` shows the result under the common mask shapes.
 
 ![Launcher icon under common masks](tools/glyphgen/preview.png)
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ## Permissions
 
