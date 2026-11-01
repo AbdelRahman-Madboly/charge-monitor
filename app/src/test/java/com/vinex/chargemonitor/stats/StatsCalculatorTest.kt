@@ -37,6 +37,8 @@ class StatsCalculatorTest {
         sourceId = sourceId, plug = "AC", startMs = startMs, endMs = if (open) null else startMs + 1,
         startLevel = from, endLevel = to, mahIn = mahIn, whIn = whIn, usedWhileCharging = used, mock = mock,
         sourceConfirmed = confirmed,
+        // Cell energy as the model would record it at a flat 85 %, so the figures stay easy to check.
+        cellsWh = whIn / 0.85, portWh = whIn / 0.85 * 0.92,
     )
 
     private fun mark(tMs: Long, kind: BankEventKind, sourceId: Long = bank.id) =
@@ -94,9 +96,10 @@ class StatsCalculatorTest {
             session(0f, 50f, whIn = 99.0, open = true),
             session(0f, 50f, whIn = 40.0, confirmed = false),
         )
-        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, lossFactor = 0.85, includeUsedWhileCharging = false)
-        assertNull(est.cycleMah)
-        assertNull(est.ratioOfRated)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank)
+        assertNull(est.cycleOutputMah)
+        assertNull(est.outputRatio)
+        assertNull(est.moduleEfficiency)
         assertEquals(0, est.completedCycles)
         // Delivered energy is a total, so used-while-charging counts; guesses, mock and open do not.
         assertEquals(27.0, est.deliveredWh, 1e-9)
@@ -106,8 +109,8 @@ class StatsCalculatorTest {
     }
 
     @Test
-    fun deliveredTotalGrowsButCycleCapacityDoesNot() {
-        // The review's case: a second drain must not read as 190 % of the label.
+    fun deliveredTotalGrowsButCycleOutputDoesNot() {
+        // A second drain must not read as 190 % of the label.
         val events = listOf(
             mark(0, BankEventKind.RECHARGED),
             mark(10 * hour, BankEventKind.EMPTY),
@@ -120,12 +123,80 @@ class StatsCalculatorTest {
             session(10f, 60f, whIn = 31.0, startMs = 21 * hour),
             session(20f, 70f, whIn = 30.0, startMs = 25 * hour),
         )
-        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false, events)
+        val rated = bank.copy(outputMah = 10_000)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, rated, events)
         assertEquals(2, est.completedCycles)
-        assertEquals(60.0 * perWh(), est.cycleMah!!, 1e-6) // median of 59 and 61 Wh
-        assertEquals(60.0 * perWh() / 20_000, est.ratioOfRated!!, 1e-9)
+        val port = 60.0 / 0.85 * 0.92 // median of 59 and 61 Wh into the battery, back to the port
+        assertEquals(port / 5.0 * 1000, est.cycleOutputMah!!, 1e-6)
+        assertEquals(port / 5.0 * 1000 / 10_000, est.outputRatio!!, 1e-9)
         assertEquals(120.0, est.deliveredWh, 1e-9)
         assertNull(est.sinceRechargeWh) // last mark is EMPTY
+    }
+
+    @Test
+    fun moduleEfficiencyIsPortOverTheCellsFullEnergy() {
+        // 20,000 mAh at 3.7 V is 74 Wh, 71.04 Wh down to the cutoff. 50 Wh into the battery is
+        // 54.12 Wh at the port, so the module gave 76 % of the cells' energy.
+        val events = listOf(mark(0, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY))
+        val sessions = listOf(session(10f, 60f, whIn = 30.0, startMs = hour), session(10f, 40f, whIn = 20.0, startMs = 2 * hour))
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
+        val port = 50.0 / 0.85 * 0.92
+        val cellWh = 74.0 * PowerSource.USABLE_TO_CUTOFF
+        assertEquals(port / cellWh, est.moduleEfficiency!!, 1e-9)
+        val drain = est.drains.single()
+        assertEquals(cellWh - port, drain.moduleLossWh!!, 1e-9)
+        // With the module measured, the cells behind every session are the port over it.
+        assertEquals(cellWh, est.drawnWh, 1e-9)
+        assertEquals(port / est.moduleEfficiency!!, StatsCalculator.energy(sessions, moduleEff = est.moduleEfficiency).cellsWh, 1e-9)
+    }
+
+    @Test
+    fun theDatasheetCellCapacityStandsInForTheLabel() {
+        val events = listOf(mark(0, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY))
+        val sessions = listOf(session(10f, 60f, whIn = 30.0, startMs = hour))
+        val datasheet = bank.copy(cellsMah = 18_000)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, datasheet, events)
+        assertEquals(30.0 / 0.85 * 0.92 / (18_000 * 3.7 / 1000.0 * PowerSource.USABLE_TO_CUTOFF), est.moduleEfficiency!!, 1e-9)
+    }
+
+    @Test
+    fun partialDrainsCountAndVerifiedDrainsSetTheEfficiency() {
+        val events = listOf(
+            // A partial window: 3.95 V at the Recharged mark.
+            BankEvent(sourceId = bank.id, tMs = 0, kind = BankEventKind.RECHARGED, cellV = 3.95),
+            mark(10 * hour, BankEventKind.EMPTY),
+            // No voltages.
+            mark(20 * hour, BankEventKind.RECHARGED), mark(30 * hour, BankEventKind.EMPTY),
+            // Verified both ends.
+            BankEvent(sourceId = bank.id, tMs = 40 * hour, kind = BankEventKind.RECHARGED, cellV = 4.19),
+            BankEvent(sourceId = bank.id, tMs = 50 * hour, kind = BankEventKind.EMPTY, cellV = 3.01),
+        )
+        val sessions = listOf(
+            session(10f, 60f, whIn = 20.0, startMs = hour),
+            session(10f, 60f, whIn = 40.0, startMs = 21 * hour),
+            session(10f, 60f, whIn = 50.0, startMs = 41 * hour),
+        )
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
+        assertEquals(3, est.drains.size)
+        assertEquals(listOf(true, false, false), est.drains.map { it.partial })
+        assertEquals(listOf(false, false, true), est.drains.map { it.verified })
+        assertEquals(3, est.completedCycles)
+        assertEquals(0, est.skippedCycles)
+        assertEquals(1, est.verifiedCycles)
+        assertEquals(50.0 / 0.85 * 0.92 / (74.0 * PowerSource.USABLE_TO_CUTOFF * 0.990), est.moduleEfficiency!!, 1e-9)
+    }
+
+    @Test
+    fun aSessionRunningWhenRechargedWasTappedBelongsToTheDrain() {
+        val events = listOf(mark(hour, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY))
+        val started = ChargeSession(
+            sourceId = bank.id, plug = "AC", startMs = hour - 20_000, endMs = 2 * hour, startLevel = 10f, endLevel = 40f,
+            whIn = 12.0, sourceConfirmed = true, cellsWh = 12.0 / 0.85, portWh = 12.0 / 0.85 * 0.92,
+        )
+        val before = started.copy(startMs = 0, endMs = hour - 60_000)
+        val est = StatsCalculator.bankCapacityEstimate(listOf(before, started), bank, events)
+        assertEquals(1, est.drains.single().sessions)
+        assertEquals(12.0, est.drains.single().batteryWh, 1e-9)
     }
 
     @Test
@@ -140,9 +211,9 @@ class StatsCalculatorTest {
             session(10f, 60f, whIn = 10.0, startMs = hour), session(20f, 90f, whIn = 14.0, startMs = 5 * hour), // 1.2
             session(10f, 90f, whIn = 16.0, startMs = 21 * hour), // 0.8
             session(0f, 100f, whIn = 20.0, startMs = 41 * hour), session(50f, 100f, whIn = 10.0, startMs = 45 * hour), // 1.5
-            session(0f, 100f, whIn = 20.0, startMs = 61 * hour, used = true), // skipped: used while charging
+            session(0f, 100f, whIn = 20.0, startMs = 61 * hour, confirmed = false), // skipped: source guessed
         )
-        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false, events)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
         assertEquals(3, est.completedCycles)
         assertEquals(1, est.skippedCycles)
         assertEquals(1.2, est.cyclePhoneCharges!!, 1e-6)
@@ -151,13 +222,13 @@ class StatsCalculatorTest {
     @Test
     fun noCompletedCycleMeansNoPhoneChargesPerDrain() {
         val sessions = listOf(session(10f, 60f, whIn = 10.0))
-        assertNull(StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false).cyclePhoneCharges)
+        assertNull(StatsCalculator.bankCapacityEstimate(sessions, bank).cyclePhoneCharges)
     }
 
     @Test
     fun labelPhoneChargesFromRatedEnergyLossAndPhoneSize() {
         // 20,000 mAh at 3.7 V is 74 Wh; 85 % of it into a 5,000 mAh (19.35 Wh) phone.
-        val expected = 74.0 * 0.85 / (5_000 * StatsCalculator.PHONE_NOMINAL_V / 1000.0)
+        val expected = 74.0 * PowerSource.USABLE_TO_CUTOFF * 0.85 / (5_000 * StatsCalculator.PHONE_NOMINAL_V / 1000.0)
         assertEquals(expected, StatsCalculator.labelPhoneCharges(bank, 5_000, 0.85)!!, 1e-9)
         // A pack rated at its own 11.1 V compares on energy, not on mAh.
         val pack = bank.copy(ratedMah = 17_492, nominalV = 11.1)
@@ -170,7 +241,95 @@ class StatsCalculatorTest {
         assertNull(StatsCalculator.labelPhoneCharges(bank, null, 0.85))
         assertNull(StatsCalculator.labelPhoneCharges(bank, 0, 0.85))
         assertNull(StatsCalculator.labelPhoneCharges(bank, 5_000, 0.0))
+        assertNull(StatsCalculator.labelPhoneCharges(bank, 5_000, Double.NaN))
         assertNull(StatsCalculator.labelPhoneCharges(bank.copy(nominalV = 0.0), 5_000, 0.85))
+    }
+
+    @Test
+    fun partialDrainScalesOutputPhoneChargesAndBatteryToAFullBank() {
+        val events = listOf(
+            mark(0, BankEventKind.RECHARGED).copy(cellV = 3.90),
+            mark(10 * hour, BankEventKind.EMPTY).copy(cellV = 3.00),
+        )
+        val est = StatsCalculator.bankCapacityEstimate(listOf(session(10f, 80f, whIn = 35.0, startMs = hour)), bank, events)
+        val d = est.drains.single()
+        assertEquals(0.70, d.window, 1e-9)
+        assertEquals(true, d.partial)
+        assertEquals(true, d.counted)
+        assertEquals(bank.usableCellWh!! * 0.70, d.cellWh!!, 1e-9)
+        assertEquals(d.portWh / d.cellWh!!, d.moduleEfficiency!!, 1e-9)
+        assertEquals(d.outputMah / 0.70, est.cycleOutputMah!!, 1e-9)
+        assertEquals(1.0, est.cyclePhoneCharges!!, 1e-9)
+        assertEquals(50.0, est.cycleBatteryWh!!, 1e-9)
+    }
+
+    @Test
+    fun tooShortDrainCountsForNothingIncludingCalibration() {
+        val events = listOf(
+            mark(0, BankEventKind.RECHARGED).copy(cellV = 3.50),
+            mark(10 * hour, BankEventKind.EMPTY).copy(cellV = 3.00, meterWh = 12.0),
+        )
+        val est = StatsCalculator.bankCapacityEstimate(listOf(session(10f, 30f, whIn = 5.0, startMs = hour)), bank, events)
+        assertEquals(false, est.drains.single().counted)
+        assertEquals(0, est.completedCycles)
+        assertEquals(1, est.skippedCycles)
+        assertEquals(0, est.verifiedCycles)
+        assertEquals(1.0, est.portScale, 0.0)
+        assertNull(est.cycleOutputMah)
+        assertNull(est.cyclePhoneCharges)
+        assertNull(est.cycleBatteryWh)
+        assertNull(est.moduleEfficiency)
+    }
+
+    @Test
+    fun meterSetsPortEnergyAndCalibratesUnmeteredDrains() {
+        val modelled = 40.0 / 0.85 * 0.92
+        val events = listOf(
+            mark(0, BankEventKind.RECHARGED).copy(cellV = 4.20),
+            mark(10 * hour, BankEventKind.EMPTY).copy(cellV = 3.00, meterWh = modelled * 1.10),
+            mark(20 * hour, BankEventKind.RECHARGED).copy(cellV = 3.90),
+            mark(30 * hour, BankEventKind.EMPTY).copy(cellV = 3.00),
+            mark(40 * hour, BankEventKind.RECHARGED),
+            mark(50 * hour, BankEventKind.EMPTY),
+        )
+        val sessions = listOf(
+            session(10f, 80f, whIn = 40.0, startMs = hour),
+            session(10f, 80f, whIn = 30.0, startMs = 21 * hour),
+            session(10f, 80f, whIn = 20.0, startMs = 41 * hour),
+        )
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
+        assertEquals(1.10, est.portScale, 1e-9)
+        assertEquals(modelled * 1.10, est.drains[0].portWh, 1e-9)
+        assertEquals(30.0 / 0.85 * 0.92 * 1.10, est.drains[1].portWh, 1e-9)
+        assertEquals(listOf(true, false, false), est.drains.map { it.metered })
+        assertEquals(listOf(DrainGrade.A, DrainGrade.B, DrainGrade.C), est.drains.map { it.grade })
+        assertEquals(2, est.verifiedCycles)
+    }
+
+    @Test
+    fun calibrationUsesMedianAndClampsWithoutClampingMeterReadings() {
+        val modelled = 30.0 / 0.85 * 0.92
+        for ((factor, expected) in listOf(0.5 to 0.80, 2.0 to 1.25)) {
+            val events = listOf(mark(0, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY).copy(meterWh = modelled * factor))
+            val est = StatsCalculator.bankCapacityEstimate(listOf(session(10f, 80f, whIn = 30.0, startMs = hour)), bank, events)
+            assertEquals(expected, est.portScale, 1e-9)
+            assertEquals(modelled * factor, est.drains.single().portWh, 1e-9)
+            assertEquals(DrainGrade.C, est.drains.single().grade)
+        }
+        val events = (0..2).flatMap { i ->
+            listOf(mark(i * 20 * hour, BankEventKind.RECHARGED),
+                mark((i * 20 + 10) * hour, BankEventKind.EMPTY).copy(meterWh = modelled * listOf(0.9, 1.1, 1.5)[i]))
+        }
+        val sessions = (0..2).map { session(10f, 80f, whIn = 30.0, startMs = (it * 20 + 1) * hour) }
+        assertEquals(1.1, StatsCalculator.bankCapacityEstimate(sessions, bank, events).portScale, 1e-9)
+    }
+
+    @Test
+    fun reversedVoltageWindowIsNotCounted() {
+        val events = listOf(mark(0, BankEventKind.RECHARGED).copy(cellV = 3.50), mark(10 * hour, BankEventKind.EMPTY).copy(cellV = 3.90))
+        val est = StatsCalculator.bankCapacityEstimate(listOf(session(10f, 30f, whIn = 5.0, startMs = hour)), bank, events)
+        assertEquals(false, est.drains.single().counted)
+        assertNull(est.moduleEfficiency)
     }
 
     // ---- chargers ----
@@ -213,14 +372,14 @@ class StatsCalculatorTest {
     fun openCycleReportsEnergySinceRecharge() {
         val events = listOf(mark(0, BankEventKind.RECHARGED))
         val sessions = listOf(session(10f, 60f, whIn = 20.0, startMs = hour), session(10f, 30f, whIn = 8.0, startMs = 2 * hour))
-        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false, events)
-        assertNull(est.cycleMah)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
+        assertNull(est.cycleOutputMah)
         assertEquals(28.0, est.sinceRechargeWh!!, 1e-9)
         assertEquals(28.0 * perWh(), est.sinceRechargeMah!!, 1e-6)
     }
 
     @Test
-    fun cycleWithAnUnconfirmedOrUsedSessionIsSkippedUnlessAllowed() {
+    fun aDrainCountsSessionsUsedWhileChargingButNotUnconfirmedOnes() {
         val events = listOf(
             mark(0, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY),
             mark(20 * hour, BankEventKind.RECHARGED), mark(30 * hour, BankEventKind.EMPTY),
@@ -229,12 +388,10 @@ class StatsCalculatorTest {
             session(10f, 60f, whIn = 30.0, startMs = hour, used = true),
             session(10f, 60f, whIn = 30.0, startMs = 21 * hour, confirmed = false),
         )
-        val strict = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false, events)
-        assertEquals(0, strict.completedCycles)
-        assertEquals(2, strict.skippedCycles)
-        val lenient = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, true, events)
-        assertEquals(1, lenient.completedCycles) // the unconfirmed one is still out
-        assertEquals(30.0 * perWh(), lenient.cycleMah!!, 1e-6)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
+        assertEquals(1, est.completedCycles)
+        assertEquals(1, est.skippedCycles)
+        assertEquals(30.0 / 0.85 * 0.92 / 5.0 * 1000, est.cycleOutputMah!!, 1e-6)
     }
 
     @Test
@@ -245,19 +402,28 @@ class StatsCalculatorTest {
             mark(10 * hour, BankEventKind.EMPTY, sourceId = 99),
         )
         val sessions = listOf(session(10f, 60f, whIn = 30.0, startMs = hour))
-        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, 0.85, false, events)
+        val est = StatsCalculator.bankCapacityEstimate(sessions, bank, events)
         assertEquals(0, est.completedCycles)
         assertEquals(0, est.skippedCycles)
     }
 
     @Test
-    fun capacityHonoursNominalVoltageAndClampsLossFactor() {
-        val events = listOf(mark(0, BankEventKind.RECHARGED), mark(10 * hour, BankEventKind.EMPTY))
-        val sessions = listOf(session(10f, 60f, whIn = 22.0, startMs = hour))
+    fun cellEnergyHonoursNominalVoltage() {
         val bank5v = bank.copy(nominalV = 5.0)
-        assertEquals(22.0 / 5.0 * 1000, StatsCalculator.bankCapacityEstimate(sessions, bank5v, 1.0, false, events).cycleMah!!, 1e-6)
-        assertEquals(22.0 / 3.7 * 1000, StatsCalculator.bankCapacityEstimate(sessions, bank, 0.0, false, events).cycleMah!!, 1e-6)
-        assertEquals(22.0 / 3.7 * 1000, StatsCalculator.bankCapacityEstimate(sessions, bank, 1.4, false, events).cycleMah!!, 1e-6)
+        assertEquals(20_000 * 5.0 / 1000 * PowerSource.USABLE_TO_CUTOFF, bank5v.usableCellWh!!, 1e-9)
+        assertEquals(20_000 * 3.7 / 1000 * PowerSource.USABLE_TO_CUTOFF, bank.usableCellWh!!, 1e-9)
+    }
+
+    @Test
+    fun aSessionWithoutModelledEnergyFallsBackToTheModelAtItsAveragePower() {
+        // 10 Wh over one hour is 10 W into the battery: the model's own figure at 10 W.
+        val legacy = ChargeSession(
+            sourceId = bank.id, plug = "AC", startMs = 0, endMs = hour, startLevel = 10f, endLevel = 60f,
+            whIn = 10.0, sourceConfirmed = true,
+        )
+        val expected = EnergyModel.flow(10.0, screenOn = false).cellsW
+        assertEquals(expected, StatsCalculator.cellsWh(legacy), 1e-9)
+        assertEquals(10.0 / expected, StatsCalculator.energy(legacy).efficiency!!, 1e-9)
     }
 
     @Test
@@ -266,8 +432,8 @@ class StatsCalculatorTest {
         val charger = laptop.copy(id = BuiltInSources.CHARGER_ID, kind = SourceKind.CHARGER)
         val sessions = listOf(session(0f, 100f, sourceId = laptop.id, whIn = 9.0))
         for (source in listOf(laptop, wireless, charger)) {
-            val est = StatsCalculator.bankCapacityEstimate(sessions, source, 0.85, true)
-            assertNull(est.cycleMah)
+            val est = StatsCalculator.bankCapacityEstimate(sessions, source)
+            assertNull(est.cycleOutputMah)
             assertEquals(0, est.sessionsUsed)
             assertEquals(0.0, est.deliveredWh, 0.0)
         }
@@ -275,10 +441,10 @@ class StatsCalculatorTest {
 
     @Test
     fun noSessionsGivesAnEmptyEstimate() {
-        val est = StatsCalculator.bankCapacityEstimate(emptyList(), bank.copy(ratedMah = null), 0.85, false)
-        assertNull(est.cycleMah)
+        val est = StatsCalculator.bankCapacityEstimate(emptyList(), bank.copy(ratedMah = null))
+        assertNull(est.cycleOutputMah)
         assertNull(est.ratedMah)
-        assertNull(est.ratioOfRated)
+        assertNull(est.outputRatio)
         assertNull(est.deliveredBankFulls)
     }
 

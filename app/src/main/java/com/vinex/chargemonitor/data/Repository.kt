@@ -46,6 +46,7 @@ class Repository(private val db: AppDatabase) {
     // Bank events
     fun observeBankEvents(): Flow<List<BankEvent>> = bankEvents.observeAll()
     suspend fun addBankEvent(event: BankEvent): Long = bankEvents.insert(event.copy(id = 0))
+    suspend fun updateBankEvent(event: BankEvent) = bankEvents.update(event)
     suspend fun deleteBankEvent(id: Long) = bankEvents.delete(id)
 
     // Samples

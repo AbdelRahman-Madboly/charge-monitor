@@ -1,26 +1,29 @@
 package com.vinex.chargemonitor.ui.settings
 
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -40,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -54,39 +58,53 @@ import com.vinex.chargemonitor.data.ThemeMode
 import com.vinex.chargemonitor.ui.Format
 import com.vinex.chargemonitor.ui.components.AccuracyInfoSheet
 import com.vinex.chargemonitor.ui.components.ColorDot
-import com.vinex.chargemonitor.ui.components.Panel
+import com.vinex.chargemonitor.ui.components.ListDivider
+import com.vinex.chargemonitor.ui.components.ListPanel
+import com.vinex.chargemonitor.ui.components.ListRow
 import com.vinex.chargemonitor.ui.components.SectionHeader
 import com.vinex.chargemonitor.ui.components.Space
 import com.vinex.chargemonitor.ui.theme.BankPalette
 import com.vinex.chargemonitor.ui.theme.Readout
 import kotlin.math.roundToInt
 
+/** Inset for dividers under rows that have a leading icon or dot, so they line up with the text. */
+private val IconInset = Space.l + 24.dp + Space.m
+
+/**
+ * Grouped settings list: sources, measurement, alerts, appearance, data, system, about. Every
+ * group is one [ListPanel]; rows open a dialog or toggle in place. [onOpenHistory] switches to the
+ * History tab, where export lives.
+ */
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewModel()) {
+fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewModel(), onOpenHistory: () -> Unit = {}) {
     val s = vm.settings
     val banks by vm.banks.collectAsStateWithLifecycle()
     val chargers by vm.chargers.collectAsStateWithLifecycle()
+    val counts by vm.sessionCounts.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<BankDraft?>(null) }
     var info by rememberSaveable { mutableStateOf(false) }
+
+    fun newDraft(kind: SourceKind): BankDraft {
+        val used = (banks + chargers).filter { !it.archived }.map { it.colorArgb }.toSet()
+        return BankDraft(colorArgb = BankPalette.firstOrNull { it !in used } ?: BankPalette.first(), kind = kind)
+    }
 
     Column(
         modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = Space.l, vertical = Space.m),
+            .padding(horizontal = Space.l)
+            .padding(top = Space.l, bottom = Space.xl),
         verticalArrangement = Arrangement.spacedBy(Space.s),
     ) {
-        Text("Settings", style = MaterialTheme.typography.titleLarge)
+        Text("Settings", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = Space.xs))
 
-        fun newDraft(kind: SourceKind): BankDraft {
-            val used = (banks + chargers).filter { !it.archived }.map { it.colorArgb }.toSet()
-            return BankDraft(colorArgb = BankPalette.firstOrNull { it !in used } ?: BankPalette.first(), kind = kind)
-        }
-
+        // Sources
         SectionHeader("Power banks")
         SourcesPanel(
             sources = banks,
-            emptyText = "No power banks yet. Add each bank you own so its charges are counted separately.",
+            counts = counts,
+            emptyText = "Add each bank you own so its charges are counted separately.",
             addText = "Add power bank",
             detail = { b ->
                 listOfNotNull(
@@ -103,157 +121,198 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
         SectionHeader("Chargers")
         SourcesPanel(
             sources = chargers,
-            emptyText = "Add a wall charger by name to test it on its own; anything else stays under the built-in Charger.",
+            counts = counts,
+            emptyText = "Name a wall charger to test it on its own. Anything unnamed is logged under the built-in Charger.",
             addText = "Add charger",
-            detail = { c -> c.ratedW?.let { "${Format.watts(it)} W rated" } ?: "No rating" },
+            detail = { c -> c.ratedW?.let { "${Format.watts(it)} W rated" } ?: "No rating set" },
             onEdit = { editing = BankDraft.of(it) },
             onAdd = { editing = newDraft(SourceKind.CHARGER) },
             onRestore = { vm.setArchived(it.id, false) },
         )
+        Footnote("Charger, Laptop USB and Wireless are built in. Laptop and wireless charges never count toward a bank.")
 
-        SectionHeader("Appearance")
-        Panel {
-            val mode by s.themeMode.flow.collectAsStateWithLifecycle()
-            Text("Theme", style = MaterialTheme.typography.bodyLarge)
-            Segmented(
-                options = ThemeMode.entries,
-                selected = mode,
-                label = {
-                    when (it) {
-                        ThemeMode.SYSTEM -> "System"
-                        ThemeMode.LIGHT -> "Light"
-                        ThemeMode.DARK -> "Dark"
-                    }
-                },
-                onSelect = { s.themeMode.set(it) },
-            )
-        }
-
-        SectionHeader("Estimates")
-        Panel {
-            val loss by s.lossFactor.flow.collectAsStateWithLifecycle()
+        // Measurement
+        SectionHeader("Measurement")
+        ListPanel {
+            val idle by s.phoneIdleW.flow.collectAsStateWithLifecycle()
             SliderSetting(
-                title = "Loss factor",
-                caption = "Share of the bank's energy that reaches the battery. 0.85 suits most banks.",
-                value = loss,
-                range = 0.60f..1.00f,
+                title = "Phone draw, screen off",
+                caption = "What the phone runs on while plugged in with the screen off. The bank pays for it, " +
+                    "so it counts as delivered but never reaches the battery. 0.30 W suits a Galaxy A54.",
+                value = idle,
+                range = 0.00f..1.00f,
                 steps = 0,
-                format = { Format.f(it.toDouble(), 2) },
-                onCommit = { s.lossFactor.set((it * 100).roundToInt() / 100f) },
+                format = { "${Format.f(it.toDouble(), 2)} W" },
+                onCommit = { s.phoneIdleW.set((it * 100).roundToInt() / 100f) },
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+            ListDivider()
+            val screen by s.phoneScreenW.flow.collectAsStateWithLifecycle()
+            SliderSetting(
+                title = "Extra draw, screen on",
+                caption = "Added while the screen is on. Measured at 1.2 to 1.4 W on this phone in light use; " +
+                    "raise it if you game or film while charging.",
+                value = screen,
+                range = 0.00f..4.00f,
+                steps = 0,
+                format = { "${Format.f(it.toDouble(), 1)} W" },
+                onCommit = { s.phoneScreenW.set((it * 10).roundToInt() / 10f) },
+            )
+            ListDivider()
             val design by s.designCapacityMah.flow.collectAsStateWithLifecycle()
             DesignCapacityField(design) { s.designCapacityMah.set(it) }
+            ListDivider()
+            val interval by s.sampleIntervalSec.flow.collectAsStateWithLifecycle()
+            ControlBlock(
+                title = "Recording interval",
+                caption = "How often a reading is stored while charging in the background. Live always updates every 2 s.",
+            ) {
+                Segmented(
+                    options = listOf(5, 10, 30, 60),
+                    selected = interval,
+                    label = { "$it s" },
+                    onSelect = { s.sampleIntervalSec.set(it) },
+                )
+            }
+            ListDivider()
+            val unit by s.currentUnit.flow.collectAsStateWithLifecycle()
+            ControlBlock(
+                title = "Current unit",
+                caption = "Auto works on most phones. Change it only if current reads about 1000× too high or low.",
+            ) {
+                Segmented(
+                    options = CurrentUnit.entries,
+                    selected = unit,
+                    label = {
+                        when (it) {
+                            CurrentUnit.AUTO -> "Auto"
+                            CurrentUnit.MICRO -> "µA"
+                            CurrentUnit.MILLI -> "mA"
+                        }
+                    },
+                    onSelect = {
+                        s.currentUnit.set(it)
+                        // The normaliser is long-lived; tell it directly so the next reading uses the new scale.
+                        ServiceLocator.currentNormalizer.override = it
+                    },
+                )
+            }
+            ListDivider()
+            ListRow(
+                title = "How accurate are these numbers?",
+                subtitle = "What is measured and what is estimated",
+                leading = { Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                trailing = { Chevron() },
+                onClick = { info = true },
+            )
         }
 
+        // Alerts
         SectionHeader("Alerts")
-        Panel {
+        ListPanel {
             val targetOn by s.alertTargetEnabled.flow.collectAsStateWithLifecycle()
             val target by s.targetLevel.flow.collectAsStateWithLifecycle()
-            SwitchSetting("Target level reached", "Notify once the battery reaches the target.", targetOn) {
-                s.alertTargetEnabled.set(it)
+            SwitchRow(
+                "Target level reached",
+                if (targetOn) "Notify once the battery reaches $target %" else "Off",
+                targetOn,
+            ) { s.alertTargetEnabled.set(it) }
+            AnimatedVisibility(targetOn) {
+                SliderSetting(
+                    title = "Target level",
+                    caption = null,
+                    value = target.toFloat(),
+                    range = 50f..100f,
+                    steps = 9,
+                    format = { "${it.roundToInt()} %" },
+                    onCommit = { s.targetLevel.set(it.roundToInt()) },
+                )
             }
-            SliderSetting(
-                title = "Target level",
-                caption = null,
-                value = target.toFloat(),
-                range = 50f..100f,
-                steps = 9,
-                format = { "${it.roundToInt()} %" },
-                enabled = targetOn,
-                onCommit = { s.targetLevel.set(it.roundToInt()) },
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+            ListDivider()
             val tempOn by s.alertTempEnabled.flow.collectAsStateWithLifecycle()
             val temp by s.tempThresholdC.flow.collectAsStateWithLifecycle()
-            SwitchSetting("High temperature", "Warn while charging above the threshold.", tempOn) { s.alertTempEnabled.set(it) }
-            SliderSetting(
-                title = "Threshold",
-                caption = null,
-                value = temp,
-                range = 35f..50f,
-                steps = 14,
-                format = { "${it.roundToInt()} °C" },
-                enabled = tempOn,
-                onCommit = { s.tempThresholdC.set(it.roundToInt().toFloat()) },
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+            SwitchRow(
+                "High temperature",
+                if (tempOn) "Warn while charging above ${temp.roundToInt()} °C" else "Off",
+                tempOn,
+            ) { s.alertTempEnabled.set(it) }
+            AnimatedVisibility(tempOn) {
+                SliderSetting(
+                    title = "Threshold",
+                    caption = null,
+                    value = temp,
+                    range = 35f..50f,
+                    steps = 14,
+                    format = { "${it.roundToInt()} °C" },
+                    onCommit = { s.tempThresholdC.set(it.roundToInt().toFloat()) },
+                )
+            }
+            ListDivider()
             val stoppedOn by s.alertStoppedEnabled.flow.collectAsStateWithLifecycle()
-            SwitchSetting("Charging stopped or full", "Notify when charging ends while still plugged in.", stoppedOn) {
-                s.alertStoppedEnabled.set(it)
+            SwitchRow(
+                "Charging stopped or full",
+                "Notify when charging ends while still plugged in",
+                stoppedOn,
+            ) { s.alertStoppedEnabled.set(it) }
+        }
+
+        // Appearance
+        SectionHeader("Appearance")
+        ListPanel {
+            val mode by s.themeMode.flow.collectAsStateWithLifecycle()
+            ControlBlock(title = "Theme", caption = null) {
+                Segmented(
+                    options = ThemeMode.entries,
+                    selected = mode,
+                    label = {
+                        when (it) {
+                            ThemeMode.SYSTEM -> "System"
+                            ThemeMode.LIGHT -> "Light"
+                            ThemeMode.DARK -> "Dark"
+                        }
+                    },
+                    onSelect = { s.themeMode.set(it) },
+                )
             }
         }
 
-        SectionHeader("Recording")
-        Panel {
-            val interval by s.sampleIntervalSec.flow.collectAsStateWithLifecycle()
-            Text("Sample interval", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "How often a reading is stored while charging in the background. The Live screen always samples every 2 s.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // Data
+        SectionHeader("Data")
+        ListPanel {
+            ListRow(
+                title = "Export sessions",
+                subtitle = "CSV export is in the History tab",
+                trailing = { Chevron() },
+                onClick = onOpenHistory,
             )
-            Segmented(
-                options = listOf(5, 10, 30, 60),
-                selected = interval,
-                label = { "$it s" },
-                onSelect = { s.sampleIntervalSec.set(it) },
+            ListDivider()
+            ListRow(
+                title = "Stored on this phone only",
+                subtitle = "Works offline; nothing leaves the phone. Archiving a bank or charger never deletes its sessions.",
             )
         }
 
-        SectionHeader("Background")
-        BackgroundPanel()
-
-        SectionHeader("Calibration")
-        Panel {
-            val unit by s.currentUnit.flow.collectAsStateWithLifecycle()
-            Text("Current unit", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "Auto works on most phones. Change it only if the current reads about 1000× too high or low.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Segmented(
-                options = CurrentUnit.entries,
-                selected = unit,
-                label = {
-                    when (it) {
-                        CurrentUnit.AUTO -> "Auto"
-                        CurrentUnit.MICRO -> "µA"
-                        CurrentUnit.MILLI -> "mA"
-                    }
-                },
-                onSelect = {
-                    s.currentUnit.set(it)
-                    // The normaliser is long-lived; tell it directly so the next reading uses the new scale.
-                    ServiceLocator.currentNormalizer.override = it
-                },
-            )
-        }
+        // System
+        SectionHeader("System")
+        SystemPanel()
 
         if (BuildConfig.DEBUG) {
             SectionHeader("Debug")
-            Panel {
+            ListPanel {
                 val mock by s.mockMode.flow.collectAsStateWithLifecycle()
-                SwitchSetting("Mock battery", "Replays a synthetic 15→80 % charge every minute. Mock sessions are hidden from totals.", mock) {
-                    s.mockMode.set(it)
-                }
+                SwitchRow(
+                    "Mock battery",
+                    "Replays a synthetic 15→80 % charge every minute. Mock sessions are hidden from totals.",
+                    mock,
+                ) { s.mockMode.set(it) }
             }
         }
 
+        // About
         SectionHeader("About")
-        Panel {
-            Row(
-                Modifier.fillMaxWidth().clickable { info = true }.padding(vertical = Space.xs),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("How accurate are these numbers?", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
-            }
-            Text(
-                "Bank Tester ${BuildConfig.VERSION_NAME}. Works offline; nothing leaves the phone.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        ListPanel {
+            ListRow(
+                title = "Bank Tester",
+                subtitle = "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
             )
         }
     }
@@ -275,6 +334,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
             } else {
                 null
             },
+            sessionCount = counts?.let { it[draft.id] ?: 0 },
         )
     }
     if (info) AccuracyInfoSheet(onDismiss = { info = false })
@@ -283,6 +343,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, vm: SettingsViewModel = viewMo
 @Composable
 private fun SourcesPanel(
     sources: List<PowerSource>,
+    counts: Map<Long, Int>?,
     emptyText: String,
     addText: String,
     detail: (PowerSource) -> String,
@@ -293,47 +354,62 @@ private fun SourcesPanel(
     val active = sources.filter { !it.archived }
     val archived = sources.filter { it.archived }
     var showArchived by rememberSaveable(addText) { mutableStateOf(false) }
-    Panel {
+    fun withCount(b: PowerSource, text: String): String {
+        val n = counts?.get(b.id) ?: return text
+        val sessions = if (n == 1) "1 session" else "$n sessions"
+        return if (text.isEmpty()) sessions else "$text · $sessions"
+    }
+    ListPanel {
         if (active.isEmpty()) {
             Text(
                 emptyText,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Space.l, vertical = Space.m),
             )
+            ListDivider()
         }
         active.forEach { b ->
-            Row(
-                Modifier.fillMaxWidth().clickable { onEdit(b) }.padding(vertical = Space.xs),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Space.m),
-            ) {
-                ColorDot(Color(b.colorArgb), size = 14.dp)
-                Column(Modifier.weight(1f)) {
-                    Text(b.name, style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        detail(b),
-                        style = Readout.small,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Edit ${b.name}")
-            }
+            ListRow(
+                title = b.name,
+                subtitle = withCount(b, detail(b)),
+                leading = { ColorDot(Color(b.colorArgb), size = 16.dp) },
+                trailing = { Chevron("Edit ${b.name}") },
+                onClick = { onEdit(b) },
+            )
+            ListDivider(startInset = IconInset)
         }
-        FilledTonalButton(onClick = onAdd) {
-            Icon(Icons.Filled.Add, contentDescription = null)
-            Text(" $addText")
-        }
+        ListRow(
+            title = addText,
+            titleColor = MaterialTheme.colorScheme.primary,
+            leading = { Icon(Icons.Filled.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            onClick = onAdd,
+        )
         if (archived.isNotEmpty()) {
-            TextButton(onClick = { showArchived = !showArchived }) {
-                Text(if (showArchived) "Hide archived (${archived.size})" else "Show archived (${archived.size})")
-            }
-            if (showArchived) {
-                archived.forEach { b ->
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.m)) {
-                        ColorDot(Color(b.colorArgb).copy(alpha = 0.5f), size = 14.dp)
-                        Text(b.name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        TextButton(onClick = { onRestore(b) }) { Text("Restore") }
+            ListDivider()
+            ListRow(
+                title = "Archived (${archived.size})",
+                subtitle = "Hidden from the picker; sessions kept",
+                trailing = {
+                    Icon(
+                        if (showArchived) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = if (showArchived) "Hide archived" else "Show archived",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                onClick = { showArchived = !showArchived },
+            )
+            AnimatedVisibility(showArchived) {
+                Column {
+                    archived.forEach { b ->
+                        ListDivider(startInset = IconInset)
+                        ListRow(
+                            title = b.name,
+                            subtitle = withCount(b, detail(b)),
+                            titleColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            leading = { ColorDot(Color(b.colorArgb).copy(alpha = 0.45f), size = 16.dp) },
+                            trailing = { TextButton(onClick = { onRestore(b) }) { Text("Restore") } },
+                        )
                     }
                 }
             }
@@ -342,7 +418,7 @@ private fun SourcesPanel(
 }
 
 @Composable
-private fun BackgroundPanel() {
+private fun SystemPanel() {
     val context = LocalContext.current
     var exempt by remember { mutableStateOf(SystemSettings.isIgnoringBatteryOptimizations(context)) }
     var notifications by remember { mutableStateOf(SystemSettings.notificationsEnabled(context)) }
@@ -352,59 +428,101 @@ private fun BackgroundPanel() {
         notifications = SystemSettings.notificationsEnabled(context)
         onPauseOrDispose { }
     }
-    Panel {
-        StatusLine(
-            ok = exempt,
-            okText = "Battery optimisation: not restricted",
-            badText = "Battery optimisation may stop recording",
+    ListPanel {
+        ListRow(
+            title = if (exempt) "Background use allowed" else "Allow background use",
+            subtitle = if (exempt) {
+                "Battery optimisation will not stop recording"
+            } else {
+                "Battery optimisation may stop recording. Tap to allow."
+            },
+            leading = { StatusIcon(exempt) },
+            trailing = if (exempt) null else ({ Chevron() }),
+            onClick = if (exempt) null else ({ SystemSettings.requestIgnoreBatteryOptimizations(context) }),
         )
-        if (!exempt) {
-            OutlinedButton(onClick = { SystemSettings.requestIgnoreBatteryOptimizations(context) }) { Text("Allow background use") }
-        }
+        ListDivider(startInset = IconInset)
+        ListRow(
+            title = if (notifications) "Notifications on" else "Turn on notifications",
+            subtitle = if (notifications) {
+                "Source prompts and alerts can show"
+            } else {
+                "Source prompts and alerts will not show. Tap to open settings."
+            },
+            leading = { StatusIcon(notifications) },
+            trailing = { Chevron() },
+            onClick = { SystemSettings.openNotificationSettings(context) },
+        )
+        ListDivider(startInset = IconInset)
         if (SystemSettings.isSamsung) {
-            Text(
-                "On Samsung phones also add Bank Tester to \"Never sleeping apps\" (Battery → Background usage limits).",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            ListRow(
+                title = "Samsung: Never sleeping apps",
+                subtitle = "Add Bank Tester under Battery → Background usage limits",
+                leading = { Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                trailing = { Chevron() },
+                onClick = { SystemSettings.openSamsungNeverSleeping(context) },
             )
-            OutlinedButton(onClick = { SystemSettings.openSamsungNeverSleeping(context) }) { Text("Open battery settings") }
-        } else {
-            TextButton(onClick = { SystemSettings.openAppDetails(context) }) { Text("App details") }
+            ListDivider(startInset = IconInset)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-        StatusLine(ok = notifications, okText = "Notifications: on", badText = "Notifications are off; prompts and alerts will not show")
-        if (!notifications) {
-            OutlinedButton(onClick = { SystemSettings.openNotificationSettings(context) }) { Text("Turn on notifications") }
-        }
-    }
-}
-
-@Composable
-private fun StatusLine(ok: Boolean, okText: String, badText: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-        Icon(
-            if (ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
-            contentDescription = null,
-            tint = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        ListRow(
+            title = "App info",
+            subtitle = "Android settings for Bank Tester",
+            leading = { Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+            trailing = { Chevron() },
+            onClick = { SystemSettings.openAppDetails(context) },
         )
-        Text(if (ok) okText else badText, style = MaterialTheme.typography.bodyLarge)
     }
 }
 
 @Composable
-private fun SwitchSetting(title: String, caption: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable { onChange(!checked) },
-        verticalAlignment = Alignment.CenterVertically,
+private fun StatusIcon(ok: Boolean) {
+    Icon(
+        if (ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
+        contentDescription = if (ok) "OK" else "Needs attention",
+        tint = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+    )
+}
+
+@Composable
+private fun Chevron(contentDescription: String? = null) {
+    Icon(
+        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+        contentDescription = contentDescription,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun Footnote(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = Space.xs),
+    )
+}
+
+/** Title and caption above a control, padded like a [ListRow]. */
+@Composable
+private fun ControlBlock(title: String, caption: String?, content: @Composable () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = Space.l, vertical = Space.m),
+        verticalArrangement = Arrangement.spacedBy(Space.xs),
     ) {
-        Column(Modifier.weight(1f).padding(end = Space.s)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            caption?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        caption?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Spacer(Modifier.height(Space.xs))
+        content()
     }
+}
+
+@Composable
+private fun SwitchRow(title: String, caption: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+    ListRow(
+        title = title,
+        subtitle = caption,
+        trailing = { Switch(checked = checked, onCheckedChange = onChange) },
+        onClick = { onChange(!checked) },
+    )
 }
 
 /** Slider that only writes the setting when the drag ends, not on every frame. */
@@ -417,13 +535,14 @@ private fun SliderSetting(
     steps: Int,
     format: (Float) -> String,
     onCommit: (Float) -> Unit,
+    modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
     var local by remember(value) { mutableFloatStateOf(value) }
-    Column {
+    Column(modifier.fillMaxWidth().padding(start = Space.l, end = Space.l, top = Space.m, bottom = Space.xs)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-            Text(format(local), style = Readout.small, color = MaterialTheme.colorScheme.onSurface)
+            Text(format(local), style = Readout.small, color = MaterialTheme.colorScheme.primary)
         }
         caption?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Slider(
@@ -442,26 +561,28 @@ private fun DesignCapacityField(current: Int, onCommit: (Int) -> Unit) {
     var text by remember(current) { mutableStateOf(if (current > 0) current.toString() else "") }
     val parsed = text.toIntOrNull()
     val error = text.isNotEmpty() && (parsed == null || parsed !in 500..20_000)
-    Text("Phone design capacity", style = MaterialTheme.typography.bodyLarge)
-    Text(
-        "Printed in the phone's specifications, e.g. 5000 mAh. Used for battery health and time-to-full.",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-        OutlinedTextField(
-            value = text,
-            onValueChange = { v -> text = v.filter { it.isDigit() }.take(5) },
-            label = { Text("mAh") },
-            singleLine = true,
-            isError = error,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.weight(1f),
-        )
-        TextButton(
-            onClick = { onCommit(if (text.isEmpty()) 0 else parsed ?: 0) },
-            enabled = !error && (parsed ?: 0) != current,
-        ) { Text("Save") }
+    val changed = (if (text.isEmpty()) 0 else parsed ?: -1) != current
+    ControlBlock(
+        title = "Phone battery capacity",
+        caption = "Design capacity from the phone's specifications, e.g. 5000. Used for battery health and time to full.",
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { v -> text = v.filter { it.isDigit() }.take(5) },
+                placeholder = { Text("Not set") },
+                suffix = { Text("mAh") },
+                singleLine = true,
+                isError = error,
+                supportingText = if (error) ({ Text("Must be between 500 and 20,000 mAh") }) else null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = { onCommit(if (text.isEmpty()) 0 else parsed ?: 0) },
+                enabled = !error && changed,
+            ) { Text("Save") }
+        }
     }
 }
 
@@ -474,7 +595,8 @@ private fun <T> Segmented(options: List<T>, selected: T, label: (T) -> String, o
                 selected = o == selected,
                 onClick = { onSelect(o) },
                 shape = SegmentedButtonDefaults.itemShape(i, options.size),
-            ) { Text(label(o)) }
+                icon = {},
+            ) { Text(label(o), maxLines = 1) }
         }
     }
 }

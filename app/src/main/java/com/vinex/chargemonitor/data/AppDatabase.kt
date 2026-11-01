@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [PowerSource::class, ChargeSession::class, Sample::class, BankEvent::class],
-    version = 3,
+    version = 6,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -24,7 +24,7 @@ abstract class AppDatabase : RoomDatabase() {
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, NAME)
                 .addCallback(SeedCallback)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
 
         /**
@@ -56,6 +56,41 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE power_source ADD COLUMN ratedW REAL")
+            }
+        }
+
+        /**
+         * Adds the modelled energy flow. Nullable with no default: older sessions have no
+         * per-reading model, and the stats fall back to a session-average estimate for them.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE charge_session ADD COLUMN phoneUseWh REAL")
+                db.execSQL("ALTER TABLE charge_session ADD COLUMN portWh REAL")
+                db.execSQL("ALTER TABLE charge_session ADD COLUMN cellsWh REAL")
+            }
+        }
+
+        /** Adds the optional inline USB meter total without changing existing marks. */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE bank_event ADD COLUMN meterWh REAL")
+            }
+        }
+
+        /**
+         * Adds a bank's product details and the cell voltage on refill marks. All nullable with
+         * no default, so every existing row reads as "not entered" and nothing recorded changes.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE power_source ADD COLUMN outputMah INTEGER")
+                db.execSQL("ALTER TABLE power_source ADD COLUMN cellsMah INTEGER")
+                db.execSQL("ALTER TABLE power_source ADD COLUMN cells TEXT")
+                db.execSQL("ALTER TABLE power_source ADD COLUMN module TEXT")
+                db.execSQL("ALTER TABLE power_source ADD COLUMN cutoffV REAL")
+                db.execSQL("ALTER TABLE power_source ADD COLUMN notes TEXT")
+                db.execSQL("ALTER TABLE bank_event ADD COLUMN cellV REAL")
             }
         }
     }

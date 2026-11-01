@@ -10,9 +10,10 @@ the label, and what current, voltage and wattage each charger delivers.
 The design and its reasoning are in
 [`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
 
-Status: prototype, running on a Galaxy A54 (Android 16). Live, Dashboard, History and Settings
-work end to end; 151 JVM tests pass. Not yet checked on a device: the home-screen widget, CSV
-export, and Samsung's fast-charge flag.
+Status: v1.0.0, finished personal tool, running on a Galaxy A54 (Android 16). Live, Dashboard,
+History, the bank screen and Settings work end to end; 246 JVM tests and 12 icon generator tests
+pass. Not yet checked on a device: the home-screen widget, CSV export, and Samsung's fast-charge
+flag.
 
 | Live | Dashboard | History |
 |---|---|---|
@@ -26,6 +27,11 @@ Screenshots are from the emulator with mock data.
   Partial charges add up: 15 to 80 % plus 5 to 35 % is 0.95.
 - **Charge and energy** come from the fuel gauge's charge counter once it has moved 30 mAh, and
   from integrating current for shorter sessions.
+- **Delivered to phone** adds what the phone used while charging to what the battery gained, so
+  a bank used with the screen on is not penalised. The phone's draw is the median charge current
+  with the screen off minus the median with it on (below 80 %), counted over screen-on time; a
+  session with no screen-off baseline uses the phone's typical measured draw. Screen-off idle
+  use is not counted, so the figure is a lower bound. Banks rank by it by default.
 - **Real bank capacity** is the energy delivered between tapping *Recharged* and *Ran empty* on
   the bank's card, divided by a conversion-loss factor (0.85 by default).
 - **Laptops** are recognised by the USB data connection and never count toward a power bank. A
@@ -40,6 +46,15 @@ Screenshots are from the emulator with mock data.
   same cell voltage.
 - **Mains or power bank?** The phone cannot tell, so plugging into AC raises a notification that
   asks. Unconfirmed sessions stay out of bank totals.
+
+## What it does not do
+
+- It does not measure the power bank directly. Every figure is read at the phone's battery, so
+  the bank's own losses are estimated from marked drains and a conversion-loss factor.
+- It cannot tell mains from a power bank on its own; an AC session needs a tap to confirm.
+- It does not sync, upload or back up anything. There is no internet permission; data leaves
+  the phone only through CSV export.
+- It is not on Google Play. It is built from source and installed with `adb`.
 
 ## Preset sources
 

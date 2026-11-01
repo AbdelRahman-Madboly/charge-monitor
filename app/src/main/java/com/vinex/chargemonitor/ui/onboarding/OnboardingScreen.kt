@@ -82,7 +82,13 @@ fun OnboardingScreen(onDone: () -> Unit) {
                 )
             }
         }
-        Spacer(Modifier.height(Space.xl))
+        Text(
+            "Step ${step + 1} of $steps",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = Space.s),
+        )
+        Spacer(Modifier.height(Space.l))
         AnimatedContent(targetState = step, label = "onboarding", modifier = Modifier.weight(1f)) { s ->
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Space.l)) {
                 when (s) {
@@ -110,7 +116,7 @@ private fun StepTitle(title: String, body: String) {
 
 @Composable
 private fun Done(text: String) {
-    Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), shape = RoundedCornerShape(10.dp)) {
+    Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {
         Row(
             Modifier.fillMaxWidth().padding(Space.m),
             verticalAlignment = Alignment.CenterVertically,
@@ -191,21 +197,25 @@ private fun BatteryStep() {
 private fun BankStep(onFinished: () -> Unit) {
     val scope = rememberCoroutineScope()
     var draft by remember { mutableStateOf(BankDraft(colorArgb = BankPalette.first())) }
+    var showErrors by remember { mutableStateOf(false) }
     StepTitle(
         "Your first power bank",
         "Each bank's charges are counted separately. Add more later in Settings. " +
             "Wall chargers, laptops and wireless pads are already built in.",
     )
-    BankFields(draft, onChange = { draft = it })
+    BankFields(draft, onChange = { draft = it }, showErrors = showErrors)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         TextButton(onClick = onFinished) { Text("Skip") }
         Spacer(Modifier.weight(1f))
         Button(
-            enabled = draft.isValid,
             onClick = {
-                scope.launch {
-                    SettingsViewModel.saveBank(ServiceLocator.repository, draft)
-                    onFinished()
+                if (!draft.isValid) {
+                    showErrors = true
+                } else {
+                    scope.launch {
+                        SettingsViewModel.saveBank(ServiceLocator.repository, draft)
+                        onFinished()
+                    }
                 }
             },
         ) { Text("Save and finish") }

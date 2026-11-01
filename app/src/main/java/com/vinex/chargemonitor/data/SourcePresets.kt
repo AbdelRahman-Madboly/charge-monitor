@@ -16,36 +16,41 @@ object SourcePresets {
         val ratedMah: Int? = null,
         val nominalV: Double = 3.7,
         val ratedW: Double? = null,
+        val outputMah: Int? = null,
+        val cellsMah: Int? = null,
+        val cells: String? = null,
+        val module: String? = null,
+        val cutoffV: Double? = null,
+        val notes: String? = null,
     )
 
     /**
-     * The 3S8P pack from the 18650 tester (24 cells, 17,492 mAh at 11.1 V, about 167 Wh) behind a
-     * Joyroom 30 W car charger. Rated in the usual 3.7 V power-bank convention, 167 Wh / 3.7 V,
-     * so its label sits on the same scale as a bought bank's. The cells were measured to 2.50 V;
-     * a BMS cutting at 3.00 V and the car charger's own dropout leave less than this usable,
-     * which is exactly what the capacity estimate is there to find out.
+     * PB-1 v1, serial 0001: ten new Panasonic NCR18650B in parallel (1S10P) behind a 22.5 W
+     * QC4+/PD3.0 five-port module. Advertised as the product label states it: 34,000 mAh at
+     * 3.6 V, and 20,000 mAh at 5 V of output under ideal conditions. The cells' datasheet
+     * typical is 3,350 mAh each (minimum 3,200), 33,500 mAh together.
      */
-    val DIY_3S8P = Preset(name = "DIY 3S8P + Joyroom 30W", kind = SourceKind.POWER_BANK, ratedMah = 45_000)
-
-    /**
-     * Ten new Panasonic NCR18650B in parallel (1S10P) behind a 22.5 W QC4+/PD3.0 five-port
-     * module. Rated as the cells' datasheet states them: 3,350 mAh typical at 3.6 V each, so
-     * 33,500 mAh and about 121 Wh. The datasheet minimum is 3,200 mAh.
-     */
-    val DIY_1S10P = Preset(
-        name = "DIY 1S10P NCR18650B + 22.5W",
+    val PB1_V1_SN0001 = Preset(
+        name = "PB-1 v1 SN0001",
         kind = SourceKind.POWER_BANK,
-        ratedMah = 33_500,
+        ratedMah = 34_000,
         nominalV = 3.6,
+        ratedW = 22.5,
+        outputMah = 20_000,
+        cellsMah = 33_500,
+        cells = "10 × Panasonic NCR18650B, 1S10P",
+        module = "22.5 W QC4+/PD3.0/PPS, 5 ports (SW6206 class)",
+        cutoffV = 2.9,
+        notes = "Under ideal conditions charges 20,000 mAh at 5 V.",
     )
 
     /** Anker Zolo 1C 30 W USB-C wall charger with the Anker A8060 240 W C-to-C cable. */
     val ANKER_ZOLO_30W = Preset(name = "Anker Zolo 30W (A8060 cable)", kind = SourceKind.CHARGER, ratedW = 30.0)
 
-    val ALL: List<Preset> = listOf(DIY_3S8P, DIY_1S10P, ANKER_ZOLO_30W)
+    val ALL: List<Preset> = listOf(PB1_V1_SN0001, ANKER_ZOLO_30W)
 
-    /** Bumped when [ALL] gains a preset, so the new one is offered once to existing installs. */
-    const val VERSION = 2
+    /** Bumped when [ALL] gains a preset or new details, so they reach existing installs once. */
+    const val VERSION = 4
 
     /** The phone's main charger: the one the "Connected to?" prompt offers by default. */
     val MAIN_CHARGER: Preset = ANKER_ZOLO_30W
@@ -68,7 +73,31 @@ object SourcePresets {
                 nominalV = p.nominalV,
                 colorArgb = color,
                 ratedW = p.ratedW,
+                outputMah = p.outputMah,
+                cellsMah = p.cellsMah,
+                cells = p.cells,
+                module = p.module,
+                cutoffV = p.cutoffV,
+                notes = p.notes,
             )
         }
+    }
+
+    /**
+     * Existing rows that match a preset by name, with the preset's product details filled into
+     * the fields still empty. A field the user already set is never overwritten.
+     */
+    fun detailsToFill(existing: List<PowerSource>): List<PowerSource> = existing.mapNotNull { s ->
+        val p = ALL.firstOrNull { it.name.equals(s.name.trim(), ignoreCase = true) && it.kind == s.kind } ?: return@mapNotNull null
+        val filled = s.copy(
+            ratedW = s.ratedW ?: p.ratedW,
+            outputMah = s.outputMah ?: p.outputMah,
+            cellsMah = s.cellsMah ?: p.cellsMah,
+            cells = s.cells ?: p.cells,
+            module = s.module ?: p.module,
+            cutoffV = s.cutoffV ?: p.cutoffV,
+            notes = s.notes ?: p.notes,
+        )
+        filled.takeIf { it != s }
     }
 }

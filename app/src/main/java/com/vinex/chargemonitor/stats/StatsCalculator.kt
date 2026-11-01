@@ -7,6 +7,9 @@ import com.vinex.chargemonitor.data.BankEventKind
 import com.vinex.chargemonitor.data.ChargeSession
 import com.vinex.chargemonitor.data.PowerSource
 
+/** Evidence available for a drain: both voltages and meter, both voltages, or assumed endpoints. */
+enum class DrainGrade { A, B, C }
+
 /**
  * Derived numbers for the dashboard and Live screen. Pure: callers pass the sessions they want
  * counted (already filtered by source); open and mock sessions are skipped here too.
@@ -14,39 +17,121 @@ import com.vinex.chargemonitor.data.PowerSource
 object StatsCalculator {
 
     /**
+     * Sessions from Recharged to Ran empty. Resting voltages define the usable cell energy
+     * window. Port energy is measured by a USB meter when present, otherwise modelled and
+     * calibrated from counted metered drains. Module loss is cell energy minus port energy.
+     */
+    data class Drain(
+        val fromMs: Long,
+        val toMs: Long,
+        val sessions: Int,
+        /** Sum of the sessions' plugged-in time, h. */
+        val pluggedHours: Double,
+        /** Into the phone battery, Wh (measured). */
+        val batteryWh: Double,
+        val phoneUseWh: Double,
+        /** Out of the bank's port, Wh. */
+        val portWh: Double,
+        /** Phone percentage added / 100. */
+        val phoneCharges: Double,
+        /** Cell voltage on the Recharged and Ran empty marks; null when not measured. */
+        val startV: Double?,
+        val endV: Double?,
+        /** The bank's cell energy within this drain's voltage window, Wh; null without a rating. */
+        val cellWh: Double?,
+        /** Every session in it was confirmed as this bank. */
+        val confirmed: Boolean,
+        val meterWh: Double? = null,
+        val modelledPortWh: Double = portWh,
+        val window: Double = CellOcv.energyFraction(startV ?: 4.20) - CellOcv.energyFraction(endV ?: 3.00),
+    ) {
+        /** Output at the port as mAh at 5 V, the unit a bank's output rating uses. */
+        val outputMah: Double get() = portWh / PowerSource.USB_V * 1000.0
+
+        /** The Recharged voltage says the bank started below full. */
+        val partial: Boolean get() = startV != null && startV < BankEvent.FULL_V
+
+        /** Both resting voltages were measured. */
+        val verified: Boolean get() = startV != null && endV != null
+
+        /** Counted toward the bank's figures. */
+        val counted: Boolean get() = confirmed && window >= 0.30
+
+        val metered: Boolean get() = meterWh != null
+        val grade: DrainGrade get() = when {
+            verified && metered -> DrainGrade.A
+            verified -> DrainGrade.B
+            else -> DrainGrade.C
+        }
+        val outputMahFull: Double get() = if (window > 0.0) outputMah / window else 0.0
+        val phoneChargesFull: Double get() = if (window > 0.0) phoneCharges / window else 0.0
+
+        /** Port over estimated cell energy: the module's inferred efficiency. */
+        val moduleEfficiency: Double? get() = cellWh?.takeIf { it > 0.0 }?.let { portWh / it }
+
+        /** Cell energy that never reached the port: the module's heat, Wh. */
+        val moduleLossWh: Double? get() = cellWh?.let { (it - portWh).coerceAtLeast(0.0) }
+
+        /** [moduleLossWh] spread over the time the phone was plugged in, W. */
+        val moduleHeatW: Double? get() = moduleLossWh?.takeIf { pluggedHours > 0.0 }?.let { it / pluggedHours }
+    }
+
+    /**
      * What the app can say about a power bank's capacity.
      *
      * Adding up every session's energy only gives a running total ("delivered so far"), which
-     * grows without limit. A capacity needs one drain from full to empty, and only the user
-     * knows when those happened, so they mark them as [BankEvent]s. A **cycle** runs from a
-     * [BankEventKind.RECHARGED] mark to the next [BankEventKind.EMPTY] mark; its sessions'
-     * energy is one estimate of the bank's usable capacity, and [cycleMah] is the median of the
-     * completed ones.
+     * grows without limit. A capacity needs a marked drain with a usable voltage window, and only the user
+     * knows when those happened, so they mark them as [BankEvent]s. Each completed [Drain] gives
+     * the bank's measured or modelled output at the port, and with estimated cell energy, module
+     * efficiency; the figures here are medians over the counted drains.
      */
     data class CapacityEstimate(
-        /** Median usable capacity over [completedCycles], mAh at the bank's nominal voltage. */
-        val cycleMah: Double?,
+        /** Median port output per full drain, mAh at 5 V. */
+        val cycleOutputMah: Double?,
+        /** Advertised capacity at the bank's nominal voltage. */
         val ratedMah: Int?,
-        /** cycleMah / ratedMah; null without a completed cycle or a rating. */
-        val ratioOfRated: Double?,
+        /** cycleOutputMah / the bank's rated output; null without a counted drain or an output rating. */
+        val outputRatio: Double?,
         val completedCycles: Int,
-        /** Cycles that ended but were left out (open, unconfirmed or used-while-charging sessions). */
+        /** Drains that ended but were left out (an unconfirmed session, or too short). */
         val skippedCycles: Int,
-        /** Energy into the phone over every counted session, and the same as mAh at nominal. */
+        /** Energy into the phone battery over every counted session (measured). */
         val deliveredWh: Double,
+        /** Cell energy those sessions took, as mAh at the bank's nominal voltage. */
         val deliveredMah: Double,
-        /** Since the latest mark, when that mark is [BankEventKind.RECHARGED]; else null. */
+        /**
+         * Since the latest mark, when that mark is [BankEventKind.RECHARGED]; else null. Wh is
+         * into the battery, mAh is cell charge at nominal voltage.
+         */
         val sinceRechargeWh: Double?,
         val sinceRechargeMah: Double?,
         val sessionsUsed: Int,
-        /**
-         * Median over [completedCycles] of the phone percentage added per drain, / 100: how many
-         * full phone charges one full bank gives. Exact, like [fullChargeEquivalents].
-         */
+        /** Median phone percentage added per counted drain, / 100: full phone charges per full bank. */
         val cyclePhoneCharges: Double? = null,
+        /** Cell energy behind [deliveredWh], Wh. */
+        val drawnWh: Double = 0.0,
+        /** Cell energy since the latest Recharged mark, Wh; null like [sinceRechargeWh]. */
+        val sinceRechargeCellsWh: Double? = null,
+        /** Median battery energy per counted drain, Wh: what one full bank put into the phone. */
+        val cycleBatteryWh: Double? = null,
+        /**
+         * The module's efficiency, cells to port, measured from the counted drains (median; only
+         * the verified ones once there are any). Null until a drain is counted: the model's
+         * default stands in.
+         */
+        val moduleEfficiency: Double? = null,
+        /** Every completed drain, oldest first, counted or not. */
+        val drains: List<Drain> = emptyList(),
+        val portScale: Double = 1.0,
     ) {
         /** deliveredMah as multiples of the label, e.g. 2.4 "bank-fulls". */
         val deliveredBankFulls: Double? get() = ratedMah?.let { deliveredMah / it }
+
+        /** Battery energy over cell energy across every counted session; null without any. */
+        val efficiency: Double? get() = if (drawnWh > 0.0) deliveredWh / drawnWh else null
+
+        /** Counted drains with both ends measured. */
+        val verifiedCycles: Int get() = drains.count { it.counted && it.verified }
 
         companion object {
             val NONE = CapacityEstimate(null, null, null, 0, 0, 0.0, 0.0, null, null, 0)
@@ -93,73 +178,170 @@ object StatsCalculator {
      * Capacity of [bank] from its closed, non-mock, confirmed sessions and the user's refill
      * marks in [events] (other banks' marks are ignored).
      *
-     * mAh for a set of sessions is `Wh_into_battery / lossFactor / bank.nominalV × 1000`. A
-     * cycle is only used when every session in it is closed and confirmed, and, unless
-     * [includeUsedWhileCharging], none was used while charging: dropping one session from a
-     * drain would understate it far more than the phone's own use does. A source that is not a
-     * power bank never gets an estimate.
+     * A drain holds every session of the bank that overlaps the time between a Recharged mark
+     * and the next Ran empty mark, so a session already running when Recharged was tapped is
+     * still in it. Sessions used while charging count: the phone's own use is worked out per
+     * reading and kept apart from the battery figure, and leaving such a session out would cut a
+     * drain short. A source that is not a power bank never gets an estimate.
+     *
+     * Cell energy is the port energy over the module efficiency measured from the drains; until
+     * a drain is counted it is each session's modelled figure.
      */
     fun bankCapacityEstimate(
         sessions: List<ChargeSession>,
         bank: PowerSource,
-        lossFactor: Double,
-        includeUsedWhileCharging: Boolean,
         events: List<BankEvent> = emptyList(),
+        model: EnergyModel.Params = EnergyModel.DEFAULT,
     ): CapacityEstimate {
         val rated = bank.ratedMah?.takeIf { it > 0 }
         if (!bank.countsTowardBank) return CapacityEstimate.NONE.copy(ratedMah = rated)
-        // A loss factor outside (0, 1] is a settings bug, not a physical bank; keep it sane.
-        val loss = lossFactor.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(1.0) ?: 1.0
         val volts = bank.nominalV.takeIf { it.isFinite() && it > 0.0 } ?: DEFAULT_NOMINAL_V
-        fun mahOf(wh: Double) = wh / loss / volts * 1000.0
+        fun mahOf(cellsWh: Double) = cellsWh / volts * 1000.0
 
         val own = sessions.filter { it.sourceId == bank.id && !it.mock }
         val counted = own.filter { isCountable(it) && it.sourceConfirmed }
-        val deliveredWh = counted.sumOf { it.whIn }
 
+        val drains = drains(own, bank, events, model)
+        val portScale = portScale(drains)
+        val used = drains.filter { it.counted }
+        val verified = used.filter { it.verified }
+        val moduleEff = (verified.ifEmpty { used }).mapNotNull { it.moduleEfficiency }
+            .takeIf { it.isNotEmpty() }?.let(::median)?.coerceIn(MIN_MODULE_EFF, MAX_MODULE_EFF)
+        fun cells(group: List<ChargeSession>) = group.sumOf { energy(it, model, moduleEff, portScale).cellsWh }
+
+        val deliveredWh = counted.sumOf { it.whIn }
+        val drawnWh = cells(counted)
         val marks = events.filter { it.sourceId == bank.id }.sortedBy { it.tMs }
-        val cycles = mutableListOf<Double>()
-        val cycleCharges = mutableListOf<Double>()
-        var skipped = 0
-        var cycleStart: Long? = null
+        val sinceSessions = marks.lastOrNull()?.takeIf { it.kind == BankEventKind.RECHARGED }?.let { mark ->
+            counted.filter { (it.endMs ?: it.startMs) > mark.tMs }
+        }
+        val sinceWh = sinceSessions?.sumOf { it.whIn }
+        val sinceCells = sinceSessions?.let(::cells)
+        val outputMah = used.takeIf { it.isNotEmpty() }?.map { it.outputMahFull }?.let(::median)
+        return CapacityEstimate(
+            cycleOutputMah = outputMah,
+            ratedMah = rated,
+            outputRatio = outputMah?.let { o -> bank.outputMah?.takeIf { it > 0 }?.let { o / it } },
+            completedCycles = used.size,
+            skippedCycles = drains.size - used.size,
+            deliveredWh = deliveredWh,
+            deliveredMah = mahOf(drawnWh),
+            sinceRechargeWh = sinceWh,
+            sinceRechargeMah = sinceCells?.let(::mahOf),
+            sessionsUsed = counted.size,
+            cyclePhoneCharges = used.takeIf { it.isNotEmpty() }?.map { it.phoneChargesFull }?.let(::median),
+            drawnWh = drawnWh,
+            sinceRechargeCellsWh = sinceCells,
+            cycleBatteryWh = used.takeIf { it.isNotEmpty() }?.map { it.batteryWh / it.window }?.let(::median),
+            moduleEfficiency = moduleEff,
+            drains = drains,
+            portScale = portScale,
+        )
+    }
+
+    /** Every completed drain of [bank] in [events], oldest first; see [Drain]. */
+    fun drains(
+        sessions: List<ChargeSession>,
+        bank: PowerSource,
+        events: List<BankEvent>,
+        model: EnergyModel.Params = EnergyModel.DEFAULT,
+    ): List<Drain> {
+        val own = sessions.filter { it.sourceId == bank.id && isCountable(it) }
+        val marks = events.filter { it.sourceId == bank.id }.sortedBy { it.tMs }
+        val out = mutableListOf<Drain>()
+        var start: BankEvent? = null
         for (mark in marks) {
             when (mark.kind) {
-                BankEventKind.RECHARGED -> cycleStart = mark.tMs
+                BankEventKind.RECHARGED -> start = mark
                 BankEventKind.EMPTY -> {
-                    val from = cycleStart ?: continue
-                    cycleStart = null
-                    val inCycle = own.filter { it.startMs in from until mark.tMs }
-                    val usable = inCycle.isNotEmpty() && inCycle.all {
-                        isCountable(it) && it.sourceConfirmed && (includeUsedWhileCharging || !it.usedWhileCharging)
-                    }
-                    if (usable) {
-                        cycles += mahOf(inCycle.sumOf { it.whIn })
-                        cycleCharges += inCycle.sumOf { it.levelAdded.toDouble() } / 100.0
-                    } else {
-                        skipped++
-                    }
+                    val from = start ?: continue
+                    start = null
+                    val inDrain = own.filter { it.startMs < mark.tMs && (it.endMs ?: it.startMs) > from.tMs }
+                    if (inDrain.isEmpty()) continue
+                    val e = energy(inDrain, model)
+                    val window = CellOcv.energyFraction(from.cellV ?: 4.20) - CellOcv.energyFraction(mark.cellV ?: 3.00)
+                    val meter = mark.meterWh?.takeIf { it.isFinite() && it in 0.1..500.0 }
+                    out += Drain(
+                        fromMs = from.tMs,
+                        toMs = mark.tMs,
+                        sessions = inDrain.size,
+                        pluggedHours = inDrain.sumOf { ((it.endMs ?: it.startMs) - it.startMs) / 3_600_000.0 },
+                        batteryWh = e.batteryWh,
+                        phoneUseWh = e.phoneUseWh,
+                        portWh = meter ?: e.portWh,
+                        modelledPortWh = e.portWh,
+                        meterWh = meter,
+                        phoneCharges = inDrain.sumOf { it.levelAdded.toDouble() } / 100.0,
+                        startV = from.cellV,
+                        endV = mark.cellV,
+                        cellWh = bank.usableCellWh?.let { it * window },
+                        window = window,
+                        confirmed = inDrain.all { it.sourceConfirmed },
+                    )
                 }
             }
         }
-
-        val sinceWh = marks.lastOrNull()?.takeIf { it.kind == BankEventKind.RECHARGED }?.let { mark ->
-            counted.filter { it.startMs >= mark.tMs }.sumOf { it.whIn }
-        }
-        val cycleMah = cycles.takeIf { it.isNotEmpty() }?.let(::median)
-        return CapacityEstimate(
-            cycleMah = cycleMah,
-            ratedMah = rated,
-            ratioOfRated = cycleMah?.let { c -> rated?.let { c / it } },
-            completedCycles = cycles.size,
-            skippedCycles = skipped,
-            deliveredWh = deliveredWh,
-            deliveredMah = mahOf(deliveredWh),
-            sinceRechargeWh = sinceWh,
-            sinceRechargeMah = sinceWh?.let(::mahOf),
-            sessionsUsed = counted.size,
-            cyclePhoneCharges = cycleCharges.takeIf { it.isNotEmpty() }?.let(::median),
-        )
+        val scale = portScale(out)
+        return out.map { if (it.metered) it else it.copy(portWh = it.modelledPortWh * scale) }
     }
+
+    private fun portScale(drains: List<Drain>): Double =
+        drains.filter { it.counted && it.metered && it.modelledPortWh > 0.0 }
+            .map { it.meterWh!! / it.modelledPortWh }
+            .takeIf { it.isNotEmpty() }?.let(::median)?.coerceIn(0.80, 1.25) ?: 1.0
+
+    /** Bounds on a measured module efficiency, so one odd drain cannot make the figures absurd. */
+    const val MIN_MODULE_EFF = 0.40
+    const val MAX_MODULE_EFF = 0.98
+
+    /** Cell energy a session took from a power bank, Wh; see [energy]. */
+    fun cellsWh(session: ChargeSession, model: EnergyModel.Params = EnergyModel.DEFAULT, moduleEff: Double? = null): Double =
+        energy(session, model, moduleEff).cellsWh
+
+    /**
+     * Where a group of sessions' energy went, from the battery (measured) back to a bank's cells
+     * (modelled). Every figure is Wh.
+     */
+    data class EnergyTotals(
+        val batteryWh: Double = 0.0,
+        val phoneUseWh: Double = 0.0,
+        val portWh: Double = 0.0,
+        val cellsWh: Double = 0.0,
+    ) {
+        val bankLossWh: Double get() = (cellsWh - portWh).coerceAtLeast(0.0)
+
+        /** Cable and phone charger: what left the port but neither reached the battery nor ran the phone. */
+        val phoneLossWh: Double get() = (portWh - batteryWh - phoneUseWh).coerceAtLeast(0.0)
+
+        val efficiency: Double? get() = if (cellsWh > 0.0) batteryWh / cellsWh else null
+
+        operator fun plus(o: EnergyTotals) =
+            EnergyTotals(batteryWh + o.batteryWh, phoneUseWh + o.phoneUseWh, portWh + o.portWh, cellsWh + o.cellsWh)
+    }
+
+    /**
+     * One session's [EnergyTotals]: the recorded per-reading figures, or for a session recorded
+     * before the model existed, the model run at the session's average power. With [moduleEff]
+     * (the bank module's efficiency measured from full drains) the cells are the port energy over
+     * it, in place of the model's default module loss.
+     */
+    fun energy(session: ChargeSession, model: EnergyModel.Params = EnergyModel.DEFAULT, moduleEff: Double? = null, portScale: Double = 1.0): EnergyTotals {
+        val wh = session.whIn.coerceAtLeast(0.0)
+        val cells = session.cellsWh
+        val modelled = if (cells != null) {
+            EnergyTotals(wh, session.phoneUseWh ?: 0.0, session.portWh ?: cells, cells.coerceAtLeast(0.0))
+        } else {
+            val hours = ((session.endMs ?: session.updatedMs) - session.startMs) / 3_600_000.0
+            val f = EnergyModel.bridged(wh, hours, screenOn = false, model)
+            if (f == null) EnergyTotals(wh, 0.0, wh, wh) else EnergyTotals(wh, f.phoneUseW, f.portW, f.cellsW)
+        }
+        val calibrated = modelled.copy(portWh = modelled.portWh * portScale, cellsWh = modelled.cellsWh * portScale)
+        val eff = moduleEff?.takeIf { it.isFinite() && it > 0.0 } ?: return calibrated
+        return calibrated.copy(cellsWh = calibrated.portWh / eff)
+    }
+
+    fun energy(sessions: List<ChargeSession>, model: EnergyModel.Params = EnergyModel.DEFAULT, moduleEff: Double? = null, portScale: Double = 1.0): EnergyTotals =
+        sessions.fold(EnergyTotals()) { acc, s -> acc + energy(s, model, moduleEff, portScale) }
 
     /**
      * How a wall charger performs, from the battery's side: the phone only sees power going
@@ -201,15 +383,15 @@ object StatsCalculator {
     const val PHONE_NOMINAL_V = 3.87
 
     /**
-     * Full phone charges the bank's label promises: its rated energy, less [lossFactor], over
-     * the phone battery's energy. The yardstick a measured drain is judged against; null
-     * without a rating or a phone capacity.
+     * Full phone charges one full bank should give: its usable cell energy times the end-to-end
+     * [efficiency] (cells to phone battery), over the phone battery's energy. The yardstick a
+     * measured drain is judged against; null without a rating or a phone capacity.
      */
-    fun labelPhoneCharges(bank: PowerSource, phoneDesignMah: Int?, lossFactor: Double): Double? {
-        val ratedWh = bank.ratedWh ?: return null
+    fun labelPhoneCharges(bank: PowerSource, phoneDesignMah: Int?, efficiency: Double): Double? {
+        val cellWh = bank.usableCellWh ?: return null
         val phoneWh = phoneDesignMah?.takeIf { it > 0 }?.let { it * PHONE_NOMINAL_V / 1000.0 } ?: return null
-        val loss = lossFactor.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(1.0) ?: return null
-        return ratedWh * loss / phoneWh
+        val eff = efficiency.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(1.0) ?: return null
+        return cellWh * eff / phoneWh
     }
 
     /**
