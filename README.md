@@ -14,7 +14,7 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&logoColor=white)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)
 
-[How it works](#how-it-works) · [Screenshots](#screenshots) · [Hardware](#hardware) · [Quick start](#quick-start) · [What it does not do](#what-it-does-not-do)
+**[Download the APK](https://github.com/AbdelRahman-Madboly/charge-monitor/releases/latest/download/charge-monitor.apk)** · [How it works](#how-it-works) · [Screenshots](#screenshots) · [Hardware](#hardware) · [Quick start](#quick-start) · [What it does not do](#what-it-does-not-do)
 
 <img src="docs/concept-desk.jpg" width="720" alt="Charge Monitor on a phone charging from the PB-3 power bank, with a 30 W charger">
 
@@ -121,6 +121,8 @@ The right-hand picture is a concept image, not a photo.
   asks. Unconfirmed sessions stay out of bank totals.
 
 ## Quick start
+
+**Just install it:** download [`charge-monitor.apk`](https://github.com/AbdelRahman-Madboly/charge-monitor/releases/latest/download/charge-monitor.apk) on the phone (Android 10 or newer), open it and allow installing from this source. To build it yourself:
 
 Needs JDK 17 and the Android SDK (platform 34). Put the SDK path in `local.properties`
 (`sdk.dir=/path/to/Android/Sdk`, not committed).
