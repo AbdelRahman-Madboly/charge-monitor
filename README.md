@@ -1,5 +1,7 @@
 # Charge Monitor
 
+<img src="docs/readme-icon.png" width="96" align="right" alt="Charge Monitor icon">
+
 Installed as **Bank Tester**. The package id stays `com.vinex.chargemonitor`, so an update keeps
 every recorded session.
 
@@ -136,3 +138,7 @@ MIT, see [LICENSE](LICENSE).
 Five, all explainable: notifications, foreground service (plus its special-use type), boot
 completed, and the battery-optimisation exemption request. No internet access; CSV export goes
 through the system share sheet.
+
+## Author
+
+Designed and built by Abdel Rahman Mohamad EL-Sayed ([AbdelRahman-Madboly](https://github.com/AbdelRahman-Madboly) on GitHub).
