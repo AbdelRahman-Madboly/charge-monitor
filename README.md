@@ -12,6 +12,11 @@ the label, and what current, voltage and wattage each charger delivers.
 The design and its reasoning are in
 [`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
 
+<img src="docs/concept-desk.jpg" width="720" alt="Charge Monitor on a phone charging from the PB-3 power bank, with a 30 W charger">
+
+Concept image: the app measuring the PB-3 power bank. The phone screen is the emulator screenshot
+with mock data, not a measured result.
+
 ## Status
 
 v1.0.0 plus the unreleased changes in CHANGELOG.md. Built as a personal tool and used daily on one
