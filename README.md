@@ -67,11 +67,21 @@ In mock mode `MockBatterySource` takes the place of the real reader.
 
 ## Screenshots
 
-| Live | Dashboard | History |
-|---|---|---|
-| ![Live](docs/screenshots/02-live-charging.png) | ![Dashboard](docs/screenshots/03-dashboard.png) | ![History](docs/screenshots/04-history.png) |
+| Live | Dashboard | Charts | History |
+|---|---|---|---|
+| <img src="docs/screenshots/02-live-charging.png" width="200" alt="Live"> | <img src="docs/screenshots/03-dashboard.png" width="200" alt="Dashboard"> | <img src="docs/screenshots/03b-dashboard-charts.png" width="200" alt="Charts"> | <img src="docs/screenshots/04-history.png" width="200" alt="History"> |
 
-Screenshots are from the emulator with mock data.
+| Session detail | Charging from | Bank test guide | Bank product sheet |
+|---|---|---|---|
+| <img src="docs/screenshots/06-session-detail.png" width="200" alt="Session detail"> | <img src="docs/screenshots/07-source-picker.png" width="200" alt="Charging from"> | <img src="docs/screenshots/08-bank-test-guide.png" width="200" alt="Bank test guide"> | <img src="docs/screenshots/10-bank-product-sheet.png" width="200" alt="Bank product sheet"> |
+
+| Settings | Setup |
+|---|---|
+| <img src="docs/screenshots/05-settings.png" width="200" alt="Settings"> | <img src="docs/screenshots/01-onboarding.png" width="200" alt="Setup"> |
+
+<img src="docs/screenshots/11-widget.png" width="420" alt="Home-screen widget">
+
+<sub>Emulator with mock data: the sessions and the PB-1 bank results are synthetic, not measurements.</sub>
 
 ## Hardware
 
