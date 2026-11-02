@@ -1,30 +1,71 @@
+<div align="center">
+
+<img src="docs/readme-icon.png" width="110" alt="Charge Monitor icon">
+
 # Charge Monitor
 
-<img src="docs/readme-icon.png" width="96" align="right" alt="Charge Monitor icon">
+**An Android app that logs every charge in the background and tells you what each power bank and charger really delivers.**
 
-Installed as **Bank Tester**. The package id stays `com.vinex.chargemonitor`, so an update keeps
-every recorded session.
+[![CI](https://github.com/AbdelRahman-Madboly/charge-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/AbdelRahman-Madboly/charge-monitor/actions/workflows/ci.yml)
+![Status](https://img.shields.io/badge/status-used%20daily-green)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&logoColor=white)
+![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)
 
-An Android app that records every charge of the phone in the background, per power source, so
-you can see how many full phone charges each power bank really gives, its usable capacity against
-the label, and what current, voltage and wattage each charger delivers.
-
-The design and its reasoning are in
-[`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
+[How it works](#how-it-works) · [Screenshots](#screenshots) · [Hardware](#hardware) · [Quick start](#quick-start) · [What it does not do](#what-it-does-not-do)
 
 <img src="docs/concept-desk.jpg" width="720" alt="Charge Monitor on a phone charging from the PB-3 power bank, with a 30 W charger">
 
-Concept image: the app measuring the PB-3 power bank. The phone screen is the emulator screenshot
-with mock data, not a measured result.
+<sub>Concept image of the app measuring the PB-3 power bank, not a photo. The phone screen is the emulator screenshot with mock data, not a measured result.</sub>
 
-## Status
+</div>
 
-v1.0.0 plus the unreleased changes in CHANGELOG.md. Built as a personal tool and used daily on one
-Samsung phone (Android 16). Live, Dashboard, History, the bank screen and Settings work end to
-end; 246 JVM tests and 12 icon generator tests pass. Not yet checked on a device: the home-screen
-widget, CSV export, and Samsung's fast-charge flag. Other phones report charge current in
-different units and signs; `CurrentNormalizer` handles the common cases, but a phone it has not
-seen may need a setting.
+## Why Charge Monitor
+
+A power bank label says how many mAh the cells hold, not how many times it will charge your
+phone. Charge Monitor records every charge of the phone in the background, per power source, so
+you can see how many full phone charges each power bank really gives, its usable capacity against
+the label, and what current, voltage and wattage each charger delivers.
+
+Installed as **Bank Tester**. The package id stays `com.vinex.chargemonitor`, so an update keeps
+every recorded session. The design and its reasoning are in
+[`docs/specs/2026-09-28-charge-monitor-design.md`](docs/specs/2026-09-28-charge-monitor-design.md).
+
+## Highlights
+
+- **Logs in the background.** A foreground service records every charge per power source,
+  restarts itself on boot and after updates, and needs no tap to start a session.
+- **Full charges per bank.** Partial charges add up: 15 to 80 % plus 5 to 35 % is 0.95 of a
+  full charge.
+- **Real capacity against the label.** Mark *Recharged* and *Ran empty* on a bank's card and
+  the app works out the energy it delivered, compared in Wh, not mAh.
+- **Charger cards.** Peak power into the battery against the charger's rating, average power and
+  charging speed in %/h.
+- **Laptops kept apart.** A laptop is recognised by the USB data connection and never counts
+  toward a power bank.
+- **Offline by design.** No internet permission. Data leaves the phone only through CSV export.
+
+## How it works
+
+```mermaid
+flowchart LR
+    BM["Android BatteryManager<br/>+ battery broadcasts"] --> BR["BatteryReader<br/>CurrentNormalizer"]
+    BR --> SVC["ChargeMonitorService<br/>(foreground sampling loop)"]
+    SVC --> ST["SessionTracker<br/>+ SourceResolver"]
+    ST --> DB[("Room database<br/>sessions, samples,<br/>sources, bank events")]
+    SVC --> LB["LiveBus"] --> LIVE["Live screen"]
+    SVC --> NW["Alerts, status notification<br/>and home-screen widget"]
+    DB --> CALC["StatsCalculator<br/>EnergyModel"]
+    CALC --> UI["Dashboard, History,<br/>bank screen"]
+    UI --> CSV["CSV export<br/>(system share sheet)"]
+```
+
+The service reads the battery every settings interval (2 s while the Live screen is visible).
+In mock mode `MockBatterySource` takes the place of the real reader.
+
+## Screenshots
 
 | Live | Dashboard | History |
 |---|---|---|
@@ -40,6 +81,8 @@ files, print materials and a render are in [`hardware/pb3-power-bank`](hardware/
 | Design | Charging a phone (concept image) |
 |---|---|
 | ![PB-3 power bank case](hardware/pb3-power-bank/images/pb3-case-b.png) | ![PB-3 charging a phone](hardware/pb3-power-bank/images/concept-charging-phone.jpg) |
+
+The right-hand picture is a concept image, not a photo.
 
 ## How it measures
 
@@ -67,34 +110,17 @@ files, print materials and a render are in [`hardware/pb3-power-bank`](hardware/
 - **Mains or power bank?** The phone cannot tell, so plugging into AC raises a notification that
   asks. Unconfirmed sessions stay out of bank totals.
 
-## What it does not do
-
-- It does not measure the power bank directly. Every figure is read at the phone's battery, so
-  the bank's own losses are estimated from marked drains and a conversion-loss factor.
-- It cannot tell mains from a power bank on its own; an AC session needs a tap to confirm.
-- It does not sync, upload or back up anything. There is no internet permission; data leaves
-  the phone only through CSV export.
-- It is not on Google Play. It is built from source and installed with `adb`.
-
-## Preset sources
-
-A new install, and the first launch after an upgrade, adds the sources listed in
-`SourcePresets` once: a home-built 1S10P NCR18650B bank and a 30 W USB-C wall charger. Edit that
-file to ship your own. A preset whose name is already taken is skipped, and existing rows are never
-changed. The Appearance setting picks System, Light or Dark.
-
-## Build
+## Quick start
 
 Needs JDK 17 and the Android SDK (platform 34). Put the SDK path in `local.properties`
 (`sdk.dir=/path/to/Android/Sdk`, not committed).
 
 ```bash
+git clone https://github.com/AbdelRahman-Madboly/charge-monitor.git && cd charge-monitor
 ./gradlew assembleDebug testDebugUnitTest
 ```
 
 The APK lands in `app/build/outputs/apk/debug/app-debug.apk`.
-
-## Install
 
 On Samsung phones with a Secure Folder or work profile, install for the main user only:
 
@@ -102,11 +128,23 @@ On Samsung phones with a Secure Folder or work profile, install for the main use
 adb install --user 0 -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Open the app once; that starts the monitoring service. After that it restarts itself on boot and
-after updates. For reliable background logging, allow notifications and exempt the app from
-battery optimisation (on Samsung also add it to "Never sleeping apps").
+## Usage
 
-## Mock mode
+1. Open the app once; that starts the monitoring service. After that it restarts itself on boot
+   and after updates.
+2. For reliable background logging, allow notifications and exempt the app from battery
+   optimisation (on Samsung also add it to "Never sleeping apps").
+3. Plug in. When the phone reports AC, answer the notification to say whether it is mains or a
+   power bank.
+4. On a bank's card, tap *Recharged* after filling the bank and *Ran empty* when it is drained,
+   so the app can measure its real capacity.
+
+**Preset sources.** A new install, and the first launch after an upgrade, adds the sources listed
+in `SourcePresets` once: a home-built 1S10P NCR18650B bank and a 30 W USB-C wall charger. Edit
+that file to ship your own. A preset whose name is already taken is skipped, and existing rows
+are never changed. The Appearance setting picks System, Light or Dark.
+
+### Mock mode
 
 For working on the UI without a charger, a synthetic source replays a 15 to 80 % charge in about
 a minute, then unplugs for 15 s, and repeats:
@@ -117,6 +155,42 @@ adb shell setprop debug.chargemonitor.mock 0   # off
 ```
 
 Debug builds also have a mock toggle in Settings, for devices where the property cannot be read.
+
+## What it does not do
+
+- It does not measure the power bank directly. Every figure is read at the phone's battery, so
+  the bank's own losses are estimated from marked drains and a conversion-loss factor.
+- It cannot tell mains from a power bank on its own; an AC session needs a tap to confirm.
+- It does not sync, upload or back up anything. There is no internet permission; data leaves
+  the phone only through CSV export.
+- It is not on Google Play. It is built from source and installed with `adb`.
+
+## Permissions
+
+Five, all explainable: notifications, foreground service (plus its special-use type), boot
+completed, and the battery-optimisation exemption request. No internet access; CSV export goes
+through the system share sheet.
+
+## Status
+
+v1.0.0 plus the unreleased changes in [CHANGELOG.md](CHANGELOG.md). Built as a personal tool and
+used daily on one Samsung phone (Android 16).
+
+| Part | State |
+|---|---|
+| Live, Dashboard, History, bank screen, Settings | Work end to end |
+| Home-screen widget, CSV export, Samsung's fast-charge flag | Not yet checked on a device |
+| Other phones | They report charge current in different units and signs; `CurrentNormalizer` handles the common cases, but a phone it has not seen may need a setting |
+
+## Tests
+
+Each command is what CI runs (`.github/workflows/ci.yml`).
+
+| Component | Command | Result |
+|---|---|---|
+| App unit tests and debug build | `./gradlew test assembleDebug` | 246 JVM tests pass |
+| Lint | `./gradlew lintDebug` | |
+| Icon generator | `python tools/glyphgen/test_generate.py` | 12 tests pass |
 
 ## Launcher icon
 
@@ -130,20 +204,26 @@ uv run --no-project --with pillow python tools/glyphgen/generate.py
 uv run --no-project --with pillow --with pytest python tools/glyphgen/test_generate.py
 ```
 
-`tools/glyphgen/preview.png` shows the result under the common mask shapes.
+<details>
+<summary><code>tools/glyphgen/preview.png</code> shows the result under the common mask shapes.</summary>
 
 ![Launcher icon under common masks](tools/glyphgen/preview.png)
+
+</details>
+
+## Repository layout
+
+| Folder | Contents |
+|---|---|
+| `app/` | The Android app (Kotlin, Jetpack Compose, Room) |
+| `docs/` | Design spec, screenshots, README images |
+| `hardware/pb3-power-bank/` | PB-3 power bank case: STLs, print materials and images |
+| `tools/glyphgen/` | Launcher icon generator and its tests |
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
 
-## Permissions
-
-Five, all explainable: notifications, foreground service (plus its special-use type), boot
-completed, and the battery-optimisation exemption request. No internet access; CSV export goes
-through the system share sheet.
-
 ## Author
 
-Designed and built by Abdel Rahman Mohamad EL-Sayed ([AbdelRahman-Madboly](https://github.com/AbdelRahman-Madboly) on GitHub).
+Designed and built by **Abdel Rahman Mohamad EL-Sayed** ([@AbdelRahman-Madboly](https://github.com/AbdelRahman-Madboly)).
