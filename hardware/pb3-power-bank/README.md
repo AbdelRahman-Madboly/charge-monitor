@@ -5,7 +5,11 @@ The power bank this app was built to test. A home-built 1S10P pack of ten 18650 
 this pack as a preset source, so its real capacity and output can be measured from the phone
 against the label.
 
-![PB-3 case B](images/pb3-case-b.png)
+| Design | Charging a phone |
+|---|---|
+| ![PB-3 case B](images/pb3-case-b.png) | ![PB-3 charging a phone](images/concept-charging-phone.jpg) |
+
+The second picture is a concept image, not a photo of a built unit.
 
 ## Status
 

@@ -30,7 +30,9 @@ Screenshots are from the emulator with mock data.
 The app was built to test PB-3, a home-built 10 x 18650 power bank in a 3D-printed case. Its STL
 files, print materials and a render are in [`hardware/pb3-power-bank`](hardware/pb3-power-bank).
 
-![PB-3 power bank case](hardware/pb3-power-bank/images/pb3-case-b.png)
+| Design | Charging a phone (concept image) |
+|---|---|
+| ![PB-3 power bank case](hardware/pb3-power-bank/images/pb3-case-b.png) | ![PB-3 charging a phone](hardware/pb3-power-bank/images/concept-charging-phone.jpg) |
 
 ## How it measures
 
